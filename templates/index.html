@@ -3,35 +3,43 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>マルチトラック音声エディタ</title>
+<title>マルチトラック動画エディタ</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <header class="topbar">
-    <h1>🎚️ マルチトラック音声エディタ</h1>
+    <h1>🎬 マルチトラック動画エディタ</h1>
     <div class="time-counter" id="timeCounter">
       <span id="currentTimeLabel" class="current">0:00</span> / <span id="totalTimeLabel">0:00</span>
     </div>
     <div class="toolbar">
       <label class="file-btn">
-        + ファイルを追加
-        <input type="file" id="fileInput" accept="audio/*" multiple hidden>
+        + ファイルを追加（音声/画像）
+        <input type="file" id="fileInput" accept="audio/*,image/*" multiple hidden>
       </label>
       <button id="playBtn" class="btn">▶ 再生</button>
       <button id="stopBtn" class="btn">■ 停止</button>
       <button id="cutBtn" class="btn" title="選択中のクリップを再生位置でカット">✂ カット</button>
       <button id="deleteBtn" class="btn" title="選択中のクリップを削除">🗑 削除</button>
-      <button id="clearUploadsBtn" class="btn" title="サーバーに保存されている音源ファイルを全て削除します">🧹 音源を全削除</button>
+      <button id="clearUploadsBtn" class="btn" title="サーバーに保存されているファイルを全て削除します">🧹 素材を全削除</button>
       <span class="spacer"></span>
       <select id="formatSelect" class="select">
-        <option value="wav">WAV</option>
-        <option value="mp3">MP3</option>
+        <option value="mp4">MP4（動画）</option>
+        <option value="wav">WAV（音声のみ）</option>
+        <option value="mp3">MP3（音声のみ）</option>
       </select>
       <button id="exportBtn" class="btn primary">⬇ 書き出し(結合)</button>
     </div>
   </header>
 
   <div id="status" class="status"></div>
+
+  <section class="preview-panel">
+    <h2 class="preview-title">プレビュー</h2>
+    <div class="preview-canvas-wrap">
+      <canvas id="previewCanvas" width="1280" height="720"></canvas>
+    </div>
+  </section>
 
   <main class="editor">
     <div class="ruler-wrap">
@@ -40,8 +48,9 @@
     </div>
     <div id="tracksContainer" class="tracks-container">
       <div class="empty-hint" id="emptyHint">
-        「+ ファイルを追加」から音声ファイルを選ぶと、ここに新しいトラックが追加されます。<br>
-        クリップはドラッグで移動、端をドラッグでトリミング、再生ヘッド位置で「カット」できます。
+        「+ ファイルを追加」から音声ファイルや画像ファイルを選ぶと、ここに新しいトラックが追加されます。<br>
+        画像は指定した秒数だけ表示される映像クリップとして扱われ、上のプレビューに映ります。<br>
+        クリップはドラッグで移動、端をドラッグでトリミング（画像は表示時間の伸縮）、再生ヘッド位置で「カット」できます。
       </div>
     </div>
   </main>

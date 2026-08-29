@@ -1,4 +1,4 @@
-// ===== マルチトラック音声エディタ フロントエンド =====
+// ===== マルチトラック動画・音声エディタ フロントエンド =====
 
 const PX_PER_SEC = 60; // style.css の --px-per-sec と揃える
 const LABEL_WIDTH = 150;
@@ -11,6 +11,7 @@ const state = {
   playheadSec: 0,
   isPlaying: false,
   bufferCache: {},     // fileId -> Promise<AudioBuffer> (デコード済み音声データ、クリップ間で共有)
+  imageCache: {},      // fileId -> Promise<HTMLImageElement> (デコード済み画像、クリップ間で共有)
   activeSources: [],   // 再生中のAudioBufferSourceNode一覧
   rafId: null,
   playStartCtxTime: 0, // 再生開始時のAudioContext.currentTime
@@ -35,6 +36,7 @@ const el = {
   formatSelect: document.getElementById("formatSelect"),
   currentTimeLabel: document.getElementById("currentTimeLabel"),
   totalTimeLabel: document.getElementById("totalTimeLabel"),
+  previewCanvas: document.getElementById("previewCanvas"),
 };
 
 function setStatus(msg, isError = false) {
@@ -78,6 +80,62 @@ function loadBuffer(fileId, url) {
   return state.bufferCache[fileId];
 }
 
+// ---------- 画像プレビュー(Canvas) ----------
+// 画像クリップは「静止画を一定時間再生する映像クリップ」として扱う。
+// 音声のbufferCacheと同様、同じ画像ファイルはクリップ間でロード結果(Image要素)を共有する。
+
+function loadImage(fileId, url) {
+  if (!state.imageCache[fileId]) {
+    state.imageCache[fileId] = new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`画像の読み込みに失敗しました: ${url}`));
+      img.src = url;
+    });
+  }
+  return state.imageCache[fileId];
+}
+
+// キャンバスいっぱいに、アスペクト比を保ったまま中央寄せで描画する(レターボックス)。
+// サーバー側の書き出し(moviepyでの合成)と同じフィット方式に揃えている。
+function drawImageFit(ctx, img, canvasW, canvasH) {
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  if (!iw || !ih) return;
+  const scale = Math.min(canvasW / iw, canvasH / ih);
+  const dw = iw * scale;
+  const dh = ih * scale;
+  const dx = (canvasW - dw) / 2;
+  const dy = (canvasH - dh) / 2;
+  ctx.drawImage(img, dx, dy, dw, dh);
+}
+
+// 指定秒における「その時点で表示されているべき画像クリップ」をプレビューcanvasへ描画する。
+// 複数トラックの画像が同じ時刻に重なっている場合は、後のトラックほど上に重なる
+// (サーバー側の書き出しロジックと同じ規則)。該当する画像が無ければ黒で塗りつぶす。
+function updatePreview(sec) {
+  const canvas = el.previewCanvas;
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  let activeClip = null;
+  for (const track of state.tracks) {
+    for (const clip of track.clips) {
+      if (clip.kind !== "image") continue;
+      const start = clip.timelineStart;
+      const end = start + (clip.trimEnd - clip.trimStart);
+      if (sec >= start && sec < end) activeClip = clip;
+    }
+  }
+  if (!activeClip) return;
+
+  loadImage(activeClip.fileId, activeClip.url)
+    .then((img) => drawImageFit(ctx, img, canvas.width, canvas.height))
+    .catch(() => {});
+}
+
 // ---------- アップロード ----------
 
 el.fileInput.addEventListener("change", async (e) => {
@@ -106,16 +164,23 @@ async function uploadFile(file) {
       clipId: `c${++clipCounter}`,
       fileId: data.id,
       ext: data.ext,
+      kind: data.kind || "audio", // "audio" | "image"
       filename: data.filename,
       url: data.url,
-      srcDuration: data.duration,
+      // srcDurationはトリミング右ハンドルで伸ばせる上限。音声は元ファイルの長さそのもの、
+      // 画像は「静止画として表示できる上限秒数」(maxDuration)を使う。
+      srcDuration: data.maxDuration ?? data.duration,
       trimStart: 0,
       trimEnd: data.duration,
       timelineStart: 0,
       trackId,
     };
     state.tracks.push({ trackId, label: data.filename, clips: [clip] });
-    loadBuffer(clip.fileId, clip.url).catch(() => {}); // 再生に備えて先にデコードしておく
+    if (clip.kind === "image") {
+      loadImage(clip.fileId, clip.url).catch(() => {}); // プレビューに備えて先に読み込んでおく
+    } else {
+      loadBuffer(clip.fileId, clip.url).catch(() => {}); // 再生に備えて先にデコードしておく
+    }
     setStatus(`追加しました: ${file.name}`);
   } catch (err) {
     setStatus(`通信エラー: ${err}`, true);
@@ -192,7 +257,7 @@ function renderAll() {
 
     const trackDeleteBtn = document.createElement("button");
     trackDeleteBtn.className = "track-delete-btn";
-    trackDeleteBtn.title = "この音源ファイルをサーバーから削除";
+    trackDeleteBtn.title = "このファイルをサーバーから削除";
     trackDeleteBtn.textContent = "🗑";
     trackDeleteBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -229,19 +294,22 @@ function renderAll() {
   attachScrub(handle, el.ruler); // つまみ(丸)からもスクラブできるようにする。座標計算はルーラー基準。
 
   el.tracksContainer.appendChild(playhead);
+
+  updatePreview(state.playheadSec);
 }
 
 function buildClipEl(clip) {
   const dur = clip.trimEnd - clip.trimStart;
   const div = document.createElement("div");
-  div.className = "clip" + (state.selectedClipId === clip.clipId ? " selected" : "");
+  const kindClass = clip.kind === "image" ? " clip-image" : "";
+  div.className = "clip" + kindClass + (state.selectedClipId === clip.clipId ? " selected" : "");
   div.style.left = `${clip.timelineStart * PX_PER_SEC}px`;
   div.style.width = `${Math.max(dur * PX_PER_SEC, 10)}px`;
   div.dataset.clipId = clip.clipId;
 
   const labelDiv = document.createElement("div");
   labelDiv.className = "clip-label";
-  labelDiv.textContent = clip.filename;
+  labelDiv.textContent = (clip.kind === "image" ? "🖼 " : "") + clip.filename;
   div.appendChild(labelDiv);
 
   const leftHandle = document.createElement("div");
@@ -464,7 +532,7 @@ el.deleteBtn.addEventListener("click", () => {
   renderAll();
 });
 
-// トラック1つ分の音源ファイルをサーバーから削除し、タイムラインからも取り除く
+// トラック1つ分のファイル(音声/画像)をサーバーから削除し、タイムラインからも取り除く
 async function deleteTrackFile(track) {
   const fileId = track.clips[0]?.fileId;
 
@@ -485,6 +553,7 @@ async function deleteTrackFile(track) {
       return;
     }
     delete state.bufferCache[fileId];
+    delete state.imageCache[fileId];
   }
 
   if (track.clips.some((c) => c.clipId === state.selectedClipId)) {
@@ -496,12 +565,12 @@ async function deleteTrackFile(track) {
   renderAll();
 }
 
-// サーバーに保存されている音源ファイルを(前回セッション分も含めて)まとめて削除する
+// サーバーに保存されているファイル(音声/画像)を(前回セッション分も含めて)まとめて削除する
 el.clearUploadsBtn.addEventListener("click", async () => {
-  if (!confirm("サーバーに保存されている音源ファイルを全て削除します。よろしいですか?\n(現在編集中のタイムラインも空になります)")) {
+  if (!confirm("サーバーに保存されている音声・画像ファイルを全て削除します。よろしいですか?\n(現在編集中のタイムラインも空になります)")) {
     return;
   }
-  setStatus("音源を全削除中...");
+  setStatus("素材を全削除中...");
   try {
     const res = await fetch("/api/uploads", { method: "DELETE" });
     const data = await res.json().catch(() => ({}));
@@ -513,6 +582,7 @@ el.clearUploadsBtn.addEventListener("click", async () => {
     state.tracks = [];
     state.selectedClipId = null;
     state.bufferCache = {};
+    state.imageCache = {};
     setStatus(`削除しました(${data.deleted ?? 0}件)`);
     renderAll();
   } catch (err) {
@@ -545,6 +615,7 @@ function renderPlayheadOnly() {
     playheadEl.style.left = `${LABEL_WIDTH + state.playheadSec * PX_PER_SEC}px`;
   }
   updateTimeDisplay(state.playheadSec);
+  updatePreview(state.playheadSec);
 }
 
 // ルーラー、または再生ヘッドのつまみを押しながら動かす(スクラブ)ことで
@@ -594,19 +665,24 @@ el.playBtn.addEventListener("click", async () => {
   state.isPlaying = true;
   const startPlayhead = state.playheadSec;
 
-  // 再生対象のクリップを先に洗い出す
+  // 再生対象のクリップを先に洗い出す。画像クリップには音声データが無いため
+  // Web Audioのスケジューリング対象からは除外し、代わりにtickPlayhead側の
+  // updatePreview()でタイムラインに同期して表示だけを切り替える。
   const targets = [];
+  let hasRemainingContent = false;
   for (const track of state.tracks) {
     for (const clip of track.clips) {
       const dur = clip.trimEnd - clip.trimStart;
       const clipStartT = clip.timelineStart;
       const clipEndT = clip.timelineStart + dur;
       if (clipEndT <= startPlayhead) continue; // 既に終わっている
+      hasRemainingContent = true;
+      if (clip.kind === "image") continue;
       targets.push({ clip, clipStartT, clipEndT });
     }
   }
 
-  if (targets.length === 0) {
+  if (!hasRemainingContent) {
     setStatus("再生できるクリップがありません", true);
     state.isPlaying = false;
     return;
@@ -614,14 +690,16 @@ el.playBtn.addEventListener("click", async () => {
 
   // 全クリップの音声データを先に確保してから、まとめて同じ基準時刻でスケジュールする。
   // バラバラにawaitすると、クリップごとの再生開始タイミングがズレてカットした
-  // 境目にノイズが生じるため。
-  let buffers;
-  try {
-    buffers = await Promise.all(targets.map((t) => loadBuffer(t.clip.fileId, t.clip.url)));
-  } catch (err) {
-    setStatus(`音声の読み込みに失敗しました: ${err}`, true);
-    state.isPlaying = false;
-    return;
+  // 境目にノイズが生じるため。(画像のみの区間の場合はtargetsが空のままでよい)
+  let buffers = [];
+  if (targets.length > 0) {
+    try {
+      buffers = await Promise.all(targets.map((t) => loadBuffer(t.clip.fileId, t.clip.url)));
+    } catch (err) {
+      setStatus(`音声の読み込みに失敗しました: ${err}`, true);
+      state.isPlaying = false;
+      return;
+    }
   }
 
   if (!state.isPlaying) return; // 読み込み待ちの間に停止/再クリックされていたら何もしない
@@ -657,6 +735,7 @@ function tickPlayhead() {
     playheadEl.style.left = `${LABEL_WIDTH + nowSec * PX_PER_SEC}px`;
   }
   updateTimeDisplay(nowSec);
+  updatePreview(nowSec);
   state.rafId = requestAnimationFrame(tickPlayhead);
 }
 
@@ -679,6 +758,7 @@ el.exportBtn.addEventListener("click", async () => {
       clips.push({
         fileId: clip.fileId,
         ext: clip.ext,
+        kind: clip.kind,
         trimStart: clip.trimStart,
         trimEnd: clip.trimEnd,
         timelineStart: clip.timelineStart,
@@ -692,20 +772,21 @@ el.exportBtn.addEventListener("click", async () => {
 
   const fmt = el.formatSelect.value;
 
-  // 対応ブラウザ(Chrome/Edgeなど)では、実際にミックスダウンする前に保存先を選んでもらう。
+  // 対応ブラウザ(Chrome/Edgeなど)では、実際にミックスダウン/合成する前に保存先を選んでもらう。
   // ここでキャンセルされた場合はサーバー側での処理自体を行わない。
   // 非対応ブラウザ(Firefox/Safariなど)では従来通りブラウザのダウンロード機能にお任せする。
   let saveHandle = null;
   if (window.showSaveFilePicker) {
+    const typeInfo =
+      {
+        mp4: { description: "MP4動画", mime: "video/mp4" },
+        mp3: { description: "MP3音声", mime: "audio/mpeg" },
+        wav: { description: "WAV音声", mime: "audio/wav" },
+      }[fmt] || { description: "WAV音声", mime: "audio/wav" };
     try {
       saveHandle = await window.showSaveFilePicker({
         suggestedName: `mix.${fmt}`,
-        types: [
-          {
-            description: fmt === "mp3" ? "MP3音声" : "WAV音声",
-            accept: { [fmt === "mp3" ? "audio/mpeg" : "audio/wav"]: [`.${fmt}`] },
-          },
-        ],
+        types: [{ description: typeInfo.description, accept: { [typeInfo.mime]: [`.${fmt}`] } }],
       });
     } catch (err) {
       if (err.name === "AbortError") {
