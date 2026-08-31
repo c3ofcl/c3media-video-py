@@ -28,7 +28,7 @@ import uuid
 
 from flask import Flask, request, jsonify, send_from_directory, render_template
 from pydub import AudioSegment
-from PIL import Image
+from PIL import Image, ImageOps
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -71,6 +71,26 @@ def index():
     return render_template("index.html")
 
 
+def _normalize_image_orientation(path):
+    """
+    スマホ等で撮った写真は、ピクセルデータ自体は横向きのまま
+    EXIFのOrientationタグで「表示時に回転・反転する」向きだけが指定されている
+    ことが多い。ブラウザの<img>やcanvasはこのEXIFを見て自動的に正しい向きで
+    表示するが、書き出し処理で使うmoviepyのImageClipはEXIFを見ずにピクセル
+    データをそのまま読み込むため、そこだけ画像が横倒しになったり、本来と違う
+    向き・アスペクト比でレターボックスされてしまう(プレビューでは正しく見える
+    のに、書き出した動画だけおかしくなる)。
+
+    ここでアップロード直後にEXIFの向きをピクセルデータそのものに焼き込んで
+    保存し直すことで、以降はどこで読み込んでも同じ向きになるようにする。
+    """
+    with Image.open(path) as img:
+        fixed = ImageOps.exif_transpose(img)
+        if fixed.mode in ("RGBA", "P") and path.lower().endswith((".jpg", ".jpeg")):
+            fixed = fixed.convert("RGB")
+        fixed.save(path)
+
+
 @app.route("/api/upload", methods=["POST"])
 def upload():
     if "file" not in request.files:
@@ -89,10 +109,11 @@ def upload():
 
     if kind == "image":
         # PIL.Image.verify()は壊れた画像の検出用。呼び出し後はオブジェクトを
-        # 使い回せない仕様のため、サイズ取得用にもう一度開き直す。
+        # 使い回せない仕様のため、都度開き直す。
         try:
             with Image.open(path) as img:
                 img.verify()
+            _normalize_image_orientation(path)
             with Image.open(path) as img:
                 width, height = img.size
         except Exception as e:  # noqa: BLE001
@@ -323,7 +344,18 @@ def export_video(clips):
     out_name = f"mix_{uuid.uuid4().hex}.mp4"
     out_path = os.path.join(EXPORT_DIR, out_name)
     try:
-        video.write_videofile(out_path, fps=VIDEO_FPS, codec="libx264", audio_codec="aac")
+        video.write_videofile(
+            out_path,
+            fps=VIDEO_FPS,
+            codec="libx264",
+            audio_codec="aac",
+            # -movflags +faststart: メタデータ(moov atom)をファイル先頭に置く。
+            # これを付けないとffmpegはデフォルトでファイル末尾に置くため、書き出し自体は
+            # 壊れていなくても、ブラウザでの再生やダウンロード直後のプレビュー、一部の
+            # プレイヤーで「読み込めない/再生できない」ように見える原因になっていた。
+            # -pix_fmt yuv420p: 大半のプレイヤー・OS標準プレイヤーが前提とする色形式を明示指定。
+            ffmpeg_params=["-movflags", "+faststart", "-pix_fmt", "yuv420p"],
+        )
     finally:
         video.close()
         if tmp_audio_path and os.path.exists(tmp_audio_path):
@@ -366,4 +398,4 @@ def export():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000, threaded=True)
