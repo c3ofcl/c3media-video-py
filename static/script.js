@@ -12,6 +12,7 @@ const state = {
   isPlaying: false,
   bufferCache: {},     // fileId -> Promise<AudioBuffer> (デコード済み音声データ、クリップ間で共有)
   imageCache: {},      // fileId -> Promise<HTMLImageElement> (デコード済み画像、クリップ間で共有)
+  videoCache: {},      // fileId -> HTMLVideoElement (プレビュー描画用。動画クリップ間で共有)
   activeSources: [],   // 再生中のAudioBufferSourceNode一覧
   rafId: null,
   playStartCtxTime: 0, // 再生開始時のAudioContext.currentTime
@@ -37,6 +38,25 @@ const el = {
   currentTimeLabel: document.getElementById("currentTimeLabel"),
   totalTimeLabel: document.getElementById("totalTimeLabel"),
   previewCanvas: document.getElementById("previewCanvas"),
+  clipContextMenu: document.getElementById("clipContextMenu"),
+  ctxGenVideoBtn: document.getElementById("ctxGenVideoBtn"),
+  ctxGenImageBtn: document.getElementById("ctxGenImageBtn"),
+  aiActionPanel: document.getElementById("aiActionPanel"),
+  aiPanelTitle: document.getElementById("aiPanelTitle"),
+  aiPanelHint: document.getElementById("aiPanelHint"),
+  aiPanelPrompt: document.getElementById("aiPanelPrompt"),
+  aiPanelCloseBtn: document.getElementById("aiPanelCloseBtn"),
+  aiPanelSubmitBtn: document.getElementById("aiPanelSubmitBtn"),
+  aiPanelStatus: document.getElementById("aiPanelStatus"),
+  settingsBtn: document.getElementById("settingsBtn"),
+  settingsBackdrop: document.getElementById("settingsBackdrop"),
+  settingsPanel: document.getElementById("settingsPanel"),
+  settingsKeyStatus: document.getElementById("settingsKeyStatus"),
+  settingsApiKeyInput: document.getElementById("settingsApiKeyInput"),
+  settingsCloseBtn: document.getElementById("settingsCloseBtn"),
+  settingsSaveBtn: document.getElementById("settingsSaveBtn"),
+  settingsClearBtn: document.getElementById("settingsClearBtn"),
+  settingsStatus: document.getElementById("settingsStatus"),
 };
 
 function setStatus(msg, isError = false) {
@@ -80,9 +100,10 @@ function loadBuffer(fileId, url) {
   return state.bufferCache[fileId];
 }
 
-// ---------- 画像プレビュー(Canvas) ----------
-// 画像クリップは「静止画を一定時間再生する映像クリップ」として扱う。
-// 音声のbufferCacheと同様、同じ画像ファイルはクリップ間でロード結果(Image要素)を共有する。
+// ---------- 画像・動画プレビュー(Canvas) ----------
+// 画像クリップは「静止画を一定時間再生する映像クリップ」として、動画クリップは
+// (AI生成された、またはアップロードされた)実際の映像として扱う。
+// 音声のbufferCacheと同様、同じファイルはクリップ間でロード結果を共有する。
 
 function loadImage(fileId, url) {
   if (!state.imageCache[fileId]) {
@@ -96,23 +117,62 @@ function loadImage(fileId, url) {
   return state.imageCache[fileId];
 }
 
+// 動画クリップ用の非表示<video>要素を(無ければ作って)返す。再生はせず、
+// プレビュー描画のためにcurrentTimeをシークしてフレームを取り出す用途のみに使う。
+function getOrCreateVideoEl(fileId, url) {
+  if (!state.videoCache[fileId]) {
+    const v = document.createElement("video");
+    v.src = url;
+    v.muted = true;
+    v.preload = "auto";
+    v.playsInline = true;
+    state.videoCache[fileId] = v;
+  }
+  return state.videoCache[fileId];
+}
+
 // キャンバスいっぱいに、アスペクト比を保ったまま中央寄せで描画する(レターボックス)。
 // サーバー側の書き出し(moviepyでの合成)と同じフィット方式に揃えている。
-function drawImageFit(ctx, img, canvasW, canvasH) {
-  const iw = img.naturalWidth || img.width;
-  const ih = img.naturalHeight || img.height;
+// mediaEl は HTMLImageElement または HTMLVideoElement。
+function drawMediaFit(ctx, mediaEl, canvasW, canvasH) {
+  const iw = mediaEl.naturalWidth || mediaEl.videoWidth || 0;
+  const ih = mediaEl.naturalHeight || mediaEl.videoHeight || 0;
   if (!iw || !ih) return;
   const scale = Math.min(canvasW / iw, canvasH / ih);
   const dw = iw * scale;
   const dh = ih * scale;
   const dx = (canvasW - dw) / 2;
   const dy = (canvasH - dh) / 2;
-  ctx.drawImage(img, dx, dy, dw, dh);
+  ctx.drawImage(mediaEl, dx, dy, dw, dh);
 }
 
-// 指定秒における「その時点で表示されているべき画像クリップ」をプレビューcanvasへ描画する。
-// 複数トラックの画像が同じ時刻に重なっている場合は、後のトラックほど上に重なる
-// (サーバー側の書き出しロジックと同じ規則)。該当する画像が無ければ黒で塗りつぶす。
+// 動画クリップの該当オフセット位置へシークしてから描画する。シークは非同期(seekedイベント)
+// なので、既にほぼ同じ位置にいる場合は待たずに即描画し、大きくズレている場合だけ待つ。
+function seekAndDrawVideo(clip, offsetSec, ctx, canvasW, canvasH) {
+  const videoEl = getOrCreateVideoEl(clip.fileId, clip.url);
+  const target = Math.max(0, offsetSec);
+  const draw = () => drawMediaFit(ctx, videoEl, canvasW, canvasH);
+
+  if (videoEl.readyState >= 1 && Math.abs(videoEl.currentTime - target) < 0.08) {
+    draw();
+    return;
+  }
+  const onSeeked = () => {
+    videoEl.removeEventListener("seeked", onSeeked);
+    draw();
+  };
+  videoEl.addEventListener("seeked", onSeeked);
+  try {
+    videoEl.currentTime = target;
+  } catch (e) {
+    videoEl.removeEventListener("seeked", onSeeked);
+    // メタデータ未読込などで失敗することがある。読み込み後に呼び直されるので無視する。
+  }
+}
+
+// 指定秒における「その時点で表示されているべきクリップ(画像 or 動画)」をプレビュー
+// canvasへ描画する。複数トラックが同じ時刻に重なっている場合は、後のトラックほど
+// 上に重なる(サーバー側の書き出しロジックと同じ規則)。該当が無ければ黒で塗りつぶす。
 function updatePreview(sec) {
   const canvas = el.previewCanvas;
   if (!canvas) return;
@@ -123,7 +183,7 @@ function updatePreview(sec) {
   let activeClip = null;
   for (const track of state.tracks) {
     for (const clip of track.clips) {
-      if (clip.kind !== "image") continue;
+      if (clip.kind !== "image" && clip.kind !== "video") continue;
       const start = clip.timelineStart;
       const end = start + (clip.trimEnd - clip.trimStart);
       if (sec >= start && sec < end) activeClip = clip;
@@ -131,9 +191,14 @@ function updatePreview(sec) {
   }
   if (!activeClip) return;
 
-  loadImage(activeClip.fileId, activeClip.url)
-    .then((img) => drawImageFit(ctx, img, canvas.width, canvas.height))
-    .catch(() => {});
+  if (activeClip.kind === "image") {
+    loadImage(activeClip.fileId, activeClip.url)
+      .then((img) => drawMediaFit(ctx, img, canvas.width, canvas.height))
+      .catch(() => {});
+  } else {
+    const offsetIntoClip = activeClip.trimStart + (sec - activeClip.timelineStart);
+    seekAndDrawVideo(activeClip, offsetIntoClip, ctx, canvas.width, canvas.height);
+  }
 }
 
 // ---------- アップロード ----------
@@ -147,6 +212,42 @@ el.fileInput.addEventListener("change", async (e) => {
   renderAll();
 });
 
+// アップロード/AI生成のレスポンス(通常アップロードと同じ形式のJSON)から新しいトラック+
+// クリップを1つ作ってstateに追加する。戻り値は作成したclip。
+function addTrackFromAssetResponse(data, labelOverride) {
+  trackCounter += 1;
+  const trackId = `t${trackCounter}`;
+  const clip = {
+    clipId: `c${++clipCounter}`,
+    fileId: data.id,
+    ext: data.ext,
+    kind: data.kind || "audio", // "audio" | "image" | "video"
+    filename: data.filename,
+    url: data.url,
+    // srcDurationはトリミング右ハンドルで伸ばせる上限。音声・動画は元ファイルの長さそのもの、
+    // 画像は「静止画として表示できる上限秒数」(maxDuration)を使う。
+    srcDuration: data.maxDuration ?? data.duration,
+    trimStart: 0,
+    trimEnd: data.duration,
+    timelineStart: 0,
+    trackId,
+  };
+  state.tracks.push({ trackId, label: labelOverride || data.filename, clips: [clip] });
+  preloadClipMedia(clip);
+  return clip;
+}
+
+// クリップの種類に応じて、プレビュー/再生に備えたプリロードをしておく
+function preloadClipMedia(clip) {
+  if (clip.kind === "image") {
+    loadImage(clip.fileId, clip.url).catch(() => {});
+  } else if (clip.kind === "video") {
+    getOrCreateVideoEl(clip.fileId, clip.url); // <video>のsrcをセットするだけでロードが始まる
+  } else {
+    loadBuffer(clip.fileId, clip.url).catch(() => {});
+  }
+}
+
 async function uploadFile(file) {
   setStatus(`アップロード中: ${file.name} ...`);
   const fd = new FormData();
@@ -158,29 +259,7 @@ async function uploadFile(file) {
       setStatus(`エラー: ${data.error || "アップロードに失敗しました"}`, true);
       return;
     }
-    trackCounter += 1;
-    const trackId = `t${trackCounter}`;
-    const clip = {
-      clipId: `c${++clipCounter}`,
-      fileId: data.id,
-      ext: data.ext,
-      kind: data.kind || "audio", // "audio" | "image"
-      filename: data.filename,
-      url: data.url,
-      // srcDurationはトリミング右ハンドルで伸ばせる上限。音声は元ファイルの長さそのもの、
-      // 画像は「静止画として表示できる上限秒数」(maxDuration)を使う。
-      srcDuration: data.maxDuration ?? data.duration,
-      trimStart: 0,
-      trimEnd: data.duration,
-      timelineStart: 0,
-      trackId,
-    };
-    state.tracks.push({ trackId, label: data.filename, clips: [clip] });
-    if (clip.kind === "image") {
-      loadImage(clip.fileId, clip.url).catch(() => {}); // プレビューに備えて先に読み込んでおく
-    } else {
-      loadBuffer(clip.fileId, clip.url).catch(() => {}); // 再生に備えて先にデコードしておく
-    }
+    addTrackFromAssetResponse(data);
     setStatus(`追加しました: ${file.name}`);
   } catch (err) {
     setStatus(`通信エラー: ${err}`, true);
@@ -298,10 +377,12 @@ function renderAll() {
   updatePreview(state.playheadSec);
 }
 
+const CLIP_KIND_ICON = { image: "🖼 ", video: "🎬 " };
+
 function buildClipEl(clip) {
   const dur = clip.trimEnd - clip.trimStart;
   const div = document.createElement("div");
-  const kindClass = clip.kind === "image" ? " clip-image" : "";
+  const kindClass = clip.kind === "image" ? " clip-image" : clip.kind === "video" ? " clip-video" : "";
   div.className = "clip" + kindClass + (state.selectedClipId === clip.clipId ? " selected" : "");
   div.style.left = `${clip.timelineStart * PX_PER_SEC}px`;
   div.style.width = `${Math.max(dur * PX_PER_SEC, 10)}px`;
@@ -309,7 +390,7 @@ function buildClipEl(clip) {
 
   const labelDiv = document.createElement("div");
   labelDiv.className = "clip-label";
-  labelDiv.textContent = (clip.kind === "image" ? "🖼 " : "") + clip.filename;
+  labelDiv.textContent = (CLIP_KIND_ICON[clip.kind] || "") + clip.filename;
   div.appendChild(labelDiv);
 
   const leftHandle = document.createElement("div");
@@ -325,6 +406,17 @@ function buildClipEl(clip) {
     state.selectedClipId = clip.clipId;
     renderAll();
   });
+
+  // 画像クリップだけ、右クリックでMagic Hour AI生成メニューを開く
+  // (動画生成の元になれるのは画像のみ。音声・動画クリップは通常の右クリックメニューのまま)
+  if (clip.kind === "image") {
+    div.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      state.selectedClipId = clip.clipId;
+      renderAll();
+      openClipContextMenu(clip.clipId, e.clientX, e.clientY);
+    });
+  }
 
   attachDrag(div, clip);
   attachResize(leftHandle, clip, "left");
@@ -554,6 +646,7 @@ async function deleteTrackFile(track) {
     }
     delete state.bufferCache[fileId];
     delete state.imageCache[fileId];
+    delete state.videoCache[fileId];
   }
 
   if (track.clips.some((c) => c.clipId === state.selectedClipId)) {
@@ -583,6 +676,7 @@ el.clearUploadsBtn.addEventListener("click", async () => {
     state.selectedClipId = null;
     state.bufferCache = {};
     state.imageCache = {};
+    state.videoCache = {};
     setStatus(`削除しました(${data.deleted ?? 0}件)`);
     renderAll();
   } catch (err) {
@@ -665,9 +759,11 @@ el.playBtn.addEventListener("click", async () => {
   state.isPlaying = true;
   const startPlayhead = state.playheadSec;
 
-  // 再生対象のクリップを先に洗い出す。画像クリップには音声データが無いため
-  // Web Audioのスケジューリング対象からは除外し、代わりにtickPlayhead側の
-  // updatePreview()でタイムラインに同期して表示だけを切り替える。
+  // 再生対象のクリップを先に洗い出す。Web Audioでサンプル精度スケジュールできるのは
+  // kind="audio"のクリップのみ。画像には音声データが無く、動画クリップに埋め込まれた
+  // 音声はこのプレビュー再生エンジンでは扱わない(書き出し時のみ合流する)ため、
+  // どちらもスケジューリング対象からは除外し、代わりにtickPlayhead側のupdatePreview()で
+  // タイムラインに同期して表示だけを切り替える。
   const targets = [];
   let hasRemainingContent = false;
   for (const track of state.tracks) {
@@ -677,7 +773,7 @@ el.playBtn.addEventListener("click", async () => {
       const clipEndT = clip.timelineStart + dur;
       if (clipEndT <= startPlayhead) continue; // 既に終わっている
       hasRemainingContent = true;
-      if (clip.kind === "image") continue;
+      if (clip.kind !== "audio") continue;
       targets.push({ clip, clipStartT, clipEndT });
     }
   }
@@ -839,6 +935,268 @@ el.exportBtn.addEventListener("click", async () => {
   } catch (err) {
     setStatus(`書き出しに失敗しました: ${err}`, true);
   }
+});
+
+// ---------- Magic Hour AI生成 (画像クリップの右クリックメニュー + プロンプトパネル) ----------
+
+let aiPanelMode = null; // "video" | "image"
+let aiPanelTargetClipId = null;
+
+function closeClipContextMenu() {
+  el.clipContextMenu.classList.add("hidden");
+}
+
+function openClipContextMenu(clipId, clientX, clientY) {
+  closeAiPanel();
+  el.clipContextMenu.dataset.targetClipId = clipId;
+  el.clipContextMenu.classList.remove("hidden");
+  // 画面外にはみ出さないよう位置を調整
+  const menuRect = el.clipContextMenu.getBoundingClientRect();
+  const maxX = window.innerWidth - menuRect.width - 8;
+  const maxY = window.innerHeight - menuRect.height - 8;
+  el.clipContextMenu.style.left = `${Math.max(8, Math.min(clientX, maxX))}px`;
+  el.clipContextMenu.style.top = `${Math.max(8, Math.min(clientY, maxY))}px`;
+}
+
+function closeAiPanel() {
+  el.aiActionPanel.classList.add("hidden");
+  aiPanelMode = null;
+  aiPanelTargetClipId = null;
+}
+
+function openAiPanel(mode, clip, anchorX, anchorY) {
+  aiPanelMode = mode;
+  aiPanelTargetClipId = clip.clipId;
+  el.aiPanelPrompt.value = "";
+  el.aiPanelStatus.textContent = "";
+  el.aiPanelStatus.classList.remove("error");
+  el.aiPanelSubmitBtn.disabled = false;
+
+  if (mode === "video") {
+    const dur = Math.max(1, Math.round(clip.trimEnd - clip.trimStart));
+    el.aiPanelTitle.textContent = "🎬 この画像から動画を生成";
+    el.aiPanelHint.textContent =
+      `長さ: ${dur}秒(このクリップのタイムライン上の長さに合わせます)。生成後、この画像は動画クリップに置き換わります。`;
+    el.aiPanelPrompt.placeholder = "動きの指示(任意) 例: ゆっくりカメラが左からパンする";
+  } else {
+    el.aiPanelTitle.textContent = "✨ この画像を編集して新規生成";
+    el.aiPanelHint.textContent = "この画像を元にAIで編集し、新しいトラックとして追加します。";
+    el.aiPanelPrompt.placeholder = "編集内容を入力(例: 背景を夕焼けの空に変更して)";
+  }
+
+  el.aiActionPanel.classList.remove("hidden");
+  const panelRect = el.aiActionPanel.getBoundingClientRect();
+  const maxX = window.innerWidth - panelRect.width - 8;
+  const maxY = window.innerHeight - panelRect.height - 8;
+  el.aiActionPanel.style.left = `${Math.max(8, Math.min(anchorX, maxX))}px`;
+  el.aiActionPanel.style.top = `${Math.max(8, Math.min(anchorY, maxY))}px`;
+  el.aiPanelPrompt.focus();
+}
+
+el.ctxGenVideoBtn.addEventListener("click", (e) => {
+  e.stopPropagation(); // documentのクリックリスナーでパネルが即閉じないようにする
+  const found = findClip(el.clipContextMenu.dataset.targetClipId);
+  const rect = el.clipContextMenu.getBoundingClientRect(); // 閉じる前に位置を取得
+  closeClipContextMenu();
+  if (!found) return;
+  openAiPanel("video", found.clip, rect.left, rect.top);
+});
+
+el.ctxGenImageBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const found = findClip(el.clipContextMenu.dataset.targetClipId);
+  const rect = el.clipContextMenu.getBoundingClientRect();
+  closeClipContextMenu();
+  if (!found) return;
+  openAiPanel("image", found.clip, rect.left, rect.top);
+});
+
+el.aiPanelCloseBtn.addEventListener("click", closeAiPanel);
+
+el.aiPanelSubmitBtn.addEventListener("click", async () => {
+  const found = findClip(aiPanelTargetClipId);
+  if (!found) {
+    el.aiPanelStatus.textContent = "対象のクリップが見つかりません(削除された可能性があります)";
+    el.aiPanelStatus.classList.add("error");
+    return;
+  }
+  const { clip } = found;
+  const prompt = el.aiPanelPrompt.value.trim();
+
+  if (aiPanelMode === "image" && !prompt) {
+    el.aiPanelStatus.textContent = "プロンプトを入力してください";
+    el.aiPanelStatus.classList.add("error");
+    return;
+  }
+
+  el.aiPanelSubmitBtn.disabled = true;
+  const startedAt = Date.now();
+  const tick = () => {
+    el.aiPanelStatus.classList.remove("error");
+    el.aiPanelStatus.textContent =
+      `生成中...(${Math.floor((Date.now() - startedAt) / 1000)}秒経過。モデルによっては数分かかります)`;
+  };
+  tick();
+  const intervalId = setInterval(tick, 1000);
+  const mode = aiPanelMode; // fetch待ちの間に閉じられても参照できるよう退避しておく
+
+  try {
+    if (mode === "video") {
+      const endSeconds = Math.max(1, Math.round(clip.trimEnd - clip.trimStart));
+      const res = await fetch("/api/ai/image-to-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseFileId: clip.fileId,
+          baseExt: clip.ext,
+          endSeconds,
+          prompt: prompt || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "動画の生成に失敗しました");
+      replaceClipWithAsset(clip, data);
+      setStatus("動画を生成し、タイムラインのクリップと置き換えました");
+    } else {
+      const res = await fetch("/api/ai/generate-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseFileId: clip.fileId, baseExt: clip.ext, prompt }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "画像の生成に失敗しました");
+      addTrackFromAssetResponse(data);
+      setStatus("AIで編集した画像を新しいトラックとして追加しました");
+    }
+    clearInterval(intervalId);
+    closeAiPanel();
+    renderAll();
+  } catch (err) {
+    clearInterval(intervalId);
+    el.aiPanelStatus.textContent = err.message || String(err);
+    el.aiPanelStatus.classList.add("error");
+    el.aiPanelSubmitBtn.disabled = false;
+  }
+});
+
+// 生成された動画で、元の画像クリップを置き換える(同じトラック・同じタイムライン開始位置)
+function replaceClipWithAsset(oldClip, data) {
+  const track = state.tracks.find((t) => t.clips.some((c) => c.clipId === oldClip.clipId));
+  if (!track) return;
+  const idx = track.clips.findIndex((c) => c.clipId === oldClip.clipId);
+  if (idx === -1) return;
+
+  const newClip = {
+    clipId: `c${++clipCounter}`,
+    fileId: data.id,
+    ext: data.ext,
+    kind: data.kind || "video",
+    filename: data.filename,
+    url: data.url,
+    srcDuration: data.maxDuration ?? data.duration,
+    trimStart: 0,
+    trimEnd: data.duration,
+    timelineStart: oldClip.timelineStart,
+    trackId: oldClip.trackId,
+  };
+  track.clips[idx] = newClip;
+  if (state.selectedClipId === oldClip.clipId) state.selectedClipId = newClip.clipId;
+  preloadClipMedia(newClip);
+}
+
+// メニュー/パネルの外側をクリックしたら閉じる
+document.addEventListener("click", (e) => {
+  if (!el.clipContextMenu.contains(e.target)) closeClipContextMenu();
+  if (!el.aiActionPanel.contains(e.target)) closeAiPanel();
+});
+
+// 画像クリップ以外を右クリックした場合は、開いていたカスタムUIを閉じて通常のメニューに任せる
+document.addEventListener("contextmenu", (e) => {
+  if (!e.target.closest(".clip.clip-image")) {
+    closeClipContextMenu();
+    closeAiPanel();
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    closeClipContextMenu();
+    closeAiPanel();
+    closeSettingsPanel();
+  }
+});
+
+// ---------- 設定 (Magic Hour APIキー) ----------
+
+function openSettingsPanel() {
+  el.settingsBackdrop.classList.remove("hidden");
+  el.settingsPanel.classList.remove("hidden");
+  el.settingsApiKeyInput.value = "";
+  el.settingsStatus.textContent = "";
+  el.settingsStatus.classList.remove("error");
+  refreshSettingsKeyStatus();
+}
+
+function closeSettingsPanel() {
+  el.settingsBackdrop.classList.add("hidden");
+  el.settingsPanel.classList.add("hidden");
+}
+
+async function refreshSettingsKeyStatus() {
+  el.settingsKeyStatus.textContent = "確認中...";
+  try {
+    const res = await fetch("/api/settings/magic-hour-key");
+    const data = await res.json();
+    el.settingsKeyStatus.textContent = data.configured
+      ? "現在の状態: 設定済み(変更する場合は新しいキーを入力して保存してください)"
+      : "現在の状態: 未設定";
+  } catch (err) {
+    el.settingsKeyStatus.textContent = "状態の確認に失敗しました";
+  }
+}
+
+async function submitSettingsKey(key) {
+  el.settingsSaveBtn.disabled = true;
+  el.settingsClearBtn.disabled = true;
+  el.settingsStatus.classList.remove("error");
+  el.settingsStatus.textContent = "保存中...";
+  try {
+    const res = await fetch("/api/settings/magic-hour-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: key }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "保存に失敗しました");
+    el.settingsApiKeyInput.value = "";
+    el.settingsStatus.textContent = data.configured ? "保存しました" : "キーを削除しました";
+    await refreshSettingsKeyStatus();
+  } catch (err) {
+    el.settingsStatus.textContent = err.message || String(err);
+    el.settingsStatus.classList.add("error");
+  } finally {
+    el.settingsSaveBtn.disabled = false;
+    el.settingsClearBtn.disabled = false;
+  }
+}
+
+el.settingsBtn.addEventListener("click", openSettingsPanel);
+el.settingsCloseBtn.addEventListener("click", closeSettingsPanel);
+el.settingsBackdrop.addEventListener("click", closeSettingsPanel);
+
+el.settingsSaveBtn.addEventListener("click", () => {
+  const key = el.settingsApiKeyInput.value.trim();
+  if (!key) {
+    el.settingsStatus.textContent = "キーを入力してください(削除する場合は「キーを削除」を押してください)";
+    el.settingsStatus.classList.add("error");
+    return;
+  }
+  submitSettingsKey(key);
+});
+
+el.settingsClearBtn.addEventListener("click", () => {
+  if (!confirm("設定済みのAPIキーを削除します。よろしいですか?")) return;
+  submitSettingsKey("");
 });
 
 // 初期描画

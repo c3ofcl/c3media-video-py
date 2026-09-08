@@ -333,3 +333,155 @@ body {
   width: 14px;
   height: 14px;
 }
+
+.clip.clip-video {
+  background: linear-gradient(180deg, #9a6fd9, #6f4bad);
+  border: 1px solid #b48bee;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---------- 画像クリップ右クリックメニュー (Magic Hour AI生成) ---------- */
+.context-menu {
+  position: fixed;
+  z-index: 50;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  min-width: 230px;
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 9px 12px;
+  border-radius: 5px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.context-menu-item:hover {
+  background: var(--panel);
+}
+
+/* ---------- AI生成パネル(動画生成/画像編集で共用) ---------- */
+.ai-panel {
+  position: fixed;
+  z-index: 51;
+  width: min(360px, calc(100vw - 32px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  padding: 14px;
+}
+
+.ai-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  gap: 8px;
+}
+.ai-panel-header span {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-panel-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.ai-panel-close:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.ai-panel-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0 0 8px;
+}
+
+.ai-panel-textarea {
+  width: 100%;
+  resize: vertical;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+.ai-panel-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ai-panel-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.ai-panel-status {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  min-height: 16px;
+}
+.ai-panel-status.error {
+  color: #ff8a8a;
+}
+
+/* ---------- 設定パネル(Magic Hour APIキー) ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 60;
+}
+
+.settings-panel {
+  position: fixed;
+  z-index: 61;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(380px, calc(100vw - 32px));
+}
+
+.settings-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.settings-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+.settings-note a {
+  color: var(--accent);
+}
+
+.settings-footer {
+  justify-content: space-between;
+}

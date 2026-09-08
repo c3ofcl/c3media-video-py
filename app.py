@@ -4,10 +4,15 @@
 機能:
   - 複数の音声ファイル・画像ファイルのアップロード（トラック化）
     画像は「静止画を一定時間再生する動画クリップ」として扱う
+  - Magic Hour API (https://docs.magichour.ai) を使ったAI生成
+      - 参考画像生成 (AI Image Editor)  : 既存の画像をプロンプトで編集した新しい画像を作る
+      - 画像 -> 動画生成 (Image-to-Video): 画像クリップを、そのクリップの長さ(秒)のまま
+        AI動画に変換し、タイムライン上で元の画像クリップと置き換える
+    生成結果はどちらも通常のアップロード素材と同じ扱いでタイムラインに追加され、
+    トリミング・カット・移動・他クリップとの結合ができる。
   - タイムライン情報(開始位置・トリム範囲)に基づく書き出し
-      - 音声のみ(WAV/MP3): 音声クリップをミックスダウン
-      - 動画(MP4): 画像クリップを合成した映像トラックと、
-        音声クリップをミックスした音声トラックを1つの動画に書き出す
+      - 音声のみ(WAV/MP3): 音声クリップ(+ 動画クリップに埋め込まれた音声)をミックスダウン
+      - 動画(MP4): 画像・動画クリップを合成した映像トラックと、音声トラックを1つの動画に書き出す
     (トリミング / カット / 結合はフロントエンド側で非破壊的に管理し、
      書き出し時にpydub(音声)・moviepy(映像)で実際の処理を行う)
 
@@ -17,6 +22,10 @@
     - macOS: brew install ffmpeg
     - Ubuntu/Debian: sudo apt install ffmpeg
     - Windows: https://ffmpeg.org/download.html からダウンロードしPATHに追加
+  AI生成機能を使う場合は、アプリ起動後に画面右上の「⚙ 設定」からAPIキーを入力するか、
+  プロジェクト直下に .env ファイルを作り
+    MAGIC_HOUR_API_KEY=あなたのAPIキー
+  を記入してください（.env.example を参照）。設定しなくても他の機能は使えます。
 
 起動:
   python app.py
@@ -26,11 +35,19 @@
 import os
 import uuid
 
+from dotenv import load_dotenv, set_key, unset_key
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+load_dotenv(ENV_PATH)
+
 from flask import Flask, request, jsonify, send_from_directory, render_template
 from pydub import AudioSegment
 from PIL import Image, ImageOps
+from moviepy import ImageClip, VideoFileClip, ColorClip, CompositeVideoClip, AudioFileClip
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+import magic_hour_client
+
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 EXPORT_DIR = os.path.join(BASE_DIR, "exports")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -38,7 +55,8 @@ os.makedirs(EXPORT_DIR, exist_ok=True)
 
 AUDIO_EXT = {"mp3", "wav", "ogg", "m4a", "flac", "aac", "wma"}
 IMAGE_EXT = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
-ALLOWED_EXT = AUDIO_EXT | IMAGE_EXT
+VIDEO_EXT = {"mp4", "m4v", "mov", "webm"}
+ALLOWED_EXT = AUDIO_EXT | IMAGE_EXT | VIDEO_EXT
 MAX_CONTENT_LENGTH = 300 * 1024 * 1024  # 300MB
 
 # 画像クリップの初期表示秒数と、右ハンドルで伸ばせる上限秒数。
@@ -53,6 +71,10 @@ MAX_IMAGE_DURATION_SEC = 600.0
 VIDEO_CANVAS_SIZE = (1280, 720)
 VIDEO_FPS = 30
 
+if not os.environ.get("MAGIC_HOUR_API_KEY", "").strip():
+    print("[情報] MAGIC_HOUR_API_KEYが未設定です。AI画像生成/動画生成機能を使う場合は、")
+    print("       アプリ起動後に画面右上の「⚙ 設定」からAPIキーを入力してください。")
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
@@ -62,8 +84,13 @@ def allowed_file(filename: str) -> bool:
 
 
 def ext_kind(ext: str) -> str:
-    """拡張子から "audio" か "image" を判定する"""
-    return "image" if (ext or "").lower() in IMAGE_EXT else "audio"
+    """拡張子から "audio" / "image" / "video" を判定する"""
+    ext = (ext or "").lower()
+    if ext in IMAGE_EXT:
+        return "image"
+    if ext in VIDEO_EXT:
+        return "video"
+    return "audio"
 
 
 @app.route("/")
@@ -91,6 +118,64 @@ def _normalize_image_orientation(path):
         fixed.save(path)
 
 
+def _build_image_asset_response(file_id, ext, path, filename):
+    # PIL.Image.verify()は壊れた画像の検出用。呼び出し後はオブジェクトを
+    # 使い回せない仕様のため、都度開き直す。
+    with Image.open(path) as img:
+        img.verify()
+    _normalize_image_orientation(path)
+    with Image.open(path) as img:
+        width, height = img.size
+
+    return {
+        "id": file_id,
+        "ext": ext,
+        "kind": "image",
+        "filename": filename,
+        "url": f"/uploads/{file_id}.{ext}",
+        "duration": DEFAULT_IMAGE_DURATION_SEC,
+        "maxDuration": MAX_IMAGE_DURATION_SEC,
+        "width": width,
+        "height": height,
+    }
+
+
+def _build_video_asset_response(file_id, ext, path, filename):
+    clip = VideoFileClip(path)
+    try:
+        duration = clip.duration
+        width, height = clip.size
+    finally:
+        clip.close()
+
+    return {
+        "id": file_id,
+        "ext": ext,
+        "kind": "video",
+        "filename": filename,
+        "url": f"/uploads/{file_id}.{ext}",
+        "duration": duration,
+        "maxDuration": duration,
+        "width": width,
+        "height": height,
+    }
+
+
+def _build_audio_asset_response(file_id, ext, path, filename):
+    audio = AudioSegment.from_file(path)
+    duration = len(audio) / 1000.0  # 秒
+
+    return {
+        "id": file_id,
+        "ext": ext,
+        "kind": "audio",
+        "filename": filename,
+        "url": f"/uploads/{file_id}.{ext}",
+        "duration": duration,
+        "maxDuration": duration,
+    }
+
+
 @app.route("/api/upload", methods=["POST"])
 def upload():
     if "file" not in request.files:
@@ -107,52 +192,138 @@ def upload():
     path = os.path.join(UPLOAD_DIR, saved_name)
     f.save(path)
 
-    if kind == "image":
-        # PIL.Image.verify()は壊れた画像の検出用。呼び出し後はオブジェクトを
-        # 使い回せない仕様のため、都度開き直す。
-        try:
-            with Image.open(path) as img:
-                img.verify()
-            _normalize_image_orientation(path)
-            with Image.open(path) as img:
-                width, height = img.size
-        except Exception as e:  # noqa: BLE001
-            os.remove(path)
-            return jsonify({"error": f"画像を読み込めませんでした: {e}"}), 400
-
-        return jsonify(
-            {
-                "id": file_id,
-                "ext": ext,
-                "kind": "image",
-                "filename": f.filename,
-                "url": f"/uploads/{saved_name}",
-                "duration": DEFAULT_IMAGE_DURATION_SEC,
-                "maxDuration": MAX_IMAGE_DURATION_SEC,
-                "width": width,
-                "height": height,
-            }
-        )
-
     try:
-        audio = AudioSegment.from_file(path)
+        if kind == "image":
+            payload = _build_image_asset_response(file_id, ext, path, f.filename)
+        elif kind == "video":
+            payload = _build_video_asset_response(file_id, ext, path, f.filename)
+        else:
+            payload = _build_audio_asset_response(file_id, ext, path, f.filename)
     except Exception as e:  # noqa: BLE001
         os.remove(path)
-        return jsonify({"error": f"音声を読み込めませんでした: {e}"}), 400
+        label = {"image": "画像", "video": "動画", "audio": "音声"}[kind]
+        return jsonify({"error": f"{label}を読み込めませんでした: {e}"}), 400
 
-    duration = len(audio) / 1000.0  # 秒
+    return jsonify(payload)
 
-    return jsonify(
-        {
-            "id": file_id,
-            "ext": ext,
-            "kind": "audio",
-            "filename": f.filename,
-            "url": f"/uploads/{saved_name}",
-            "duration": duration,
-            "maxDuration": duration,
-        }
-    )
+
+# ---------- Magic Hour AI生成 ----------
+
+@app.route("/api/settings/magic-hour-key", methods=["GET"])
+def get_magic_hour_key_status():
+    """現在APIキーが設定されているかどうかだけを返す(キーの値自体は返さない)"""
+    configured = bool(os.environ.get("MAGIC_HOUR_API_KEY", "").strip())
+    return jsonify({"configured": configured})
+
+
+@app.route("/api/settings/magic-hour-key", methods=["POST"])
+def set_magic_hour_key():
+    """
+    Magic HourのAPIキーを設定/更新/削除する。実行中のプロセスにも即座に反映し(再起動不要)、
+    .env ファイルにも保存して次回起動時にも引き継がれるようにする。
+    リクエストJSON: { apiKey: string }  空文字列を渡すと削除
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    key = (data.get("apiKey") or "").strip()
+
+    if key:
+        os.environ["MAGIC_HOUR_API_KEY"] = key
+        set_key(ENV_PATH, "MAGIC_HOUR_API_KEY", key)
+    else:
+        os.environ.pop("MAGIC_HOUR_API_KEY", None)
+        if os.path.exists(ENV_PATH):
+            unset_key(ENV_PATH, "MAGIC_HOUR_API_KEY")
+
+    return jsonify({"ok": True, "configured": bool(key)})
+
+
+@app.route("/api/ai/generate-image", methods=["POST"])
+def ai_generate_image():
+    """
+    参考画像生成 (AI Image Editor)。既存のアップロード済み画像をプロンプトで編集し、
+    結果を新しい画像アセットとして保存する。通常アップロードと同じ形式のJSONを返す。
+
+    リクエストJSON: { baseFileId, baseExt, prompt, model?, aspectRatio?, resolution? }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    base_file_id = data.get("baseFileId")
+    base_ext = data.get("baseExt")
+    prompt = (data.get("prompt") or "").strip()
+
+    if not base_file_id or not base_ext:
+        return jsonify({"error": "元にする画像が指定されていません"}), 400
+    if not prompt:
+        return jsonify({"error": "プロンプトを入力してください"}), 400
+
+    src_path = os.path.join(UPLOAD_DIR, f"{base_file_id}.{base_ext}")
+    if not os.path.exists(src_path):
+        return jsonify({"error": "元にする画像が見つかりません"}), 404
+
+    file_id = uuid.uuid4().hex
+    out_ext = "png"
+    out_path = os.path.join(UPLOAD_DIR, f"{file_id}.{out_ext}")
+
+    try:
+        magic_hour_client.edit_image(
+            src_path,
+            prompt,
+            out_path,
+            model=data.get("model") or None,
+            aspect_ratio=data.get("aspectRatio") or None,
+            resolution=data.get("resolution") or None,
+        )
+    except magic_hour_client.MagicHourError as e:
+        return jsonify({"error": str(e)}), 502
+
+    payload = _build_image_asset_response(file_id, out_ext, out_path, f"ai_image_{file_id[:8]}.{out_ext}")
+    return jsonify(payload)
+
+
+@app.route("/api/ai/image-to-video", methods=["POST"])
+def ai_image_to_video():
+    """
+    画像 -> 動画生成 (Image-to-Video)。既存のアップロード済み画像を元に、
+    指定秒数の動画を生成し、結果を新しい動画アセットとして保存する。
+    通常アップロードと同じ形式のJSONを返す(kind: "video")。
+
+    リクエストJSON: { baseFileId, baseExt, endSeconds, prompt? }
+    endSecondsは呼び出し側(フロントエンド)で、元にする画像クリップの
+    タイムライン上の長さに合わせて渡す想定。
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    base_file_id = data.get("baseFileId")
+    base_ext = data.get("baseExt")
+
+    if not base_file_id or not base_ext:
+        return jsonify({"error": "元になる画像が指定されていません"}), 400
+
+    try:
+        end_seconds = float(data.get("endSeconds"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "動画の長さ(秒)が不正です"}), 400
+    if not (1 <= end_seconds <= 60):
+        return jsonify({"error": "動画の長さは1〜60秒の範囲で指定してください(クリップの長さを調整してください)"}), 400
+
+    src_path = os.path.join(UPLOAD_DIR, f"{base_file_id}.{base_ext}")
+    if not os.path.exists(src_path):
+        return jsonify({"error": "元になる画像が見つかりません"}), 404
+
+    file_id = uuid.uuid4().hex
+    out_ext = "mp4"
+    out_path = os.path.join(UPLOAD_DIR, f"{file_id}.{out_ext}")
+
+    try:
+        magic_hour_client.image_to_video(
+            src_path,
+            end_seconds,
+            out_path,
+            prompt=data.get("prompt") or None,
+        )
+    except magic_hour_client.MagicHourError as e:
+        return jsonify({"error": str(e)}), 502
+
+    payload = _build_video_asset_response(file_id, out_ext, out_path, f"ai_video_{file_id[:8]}.{out_ext}")
+    return jsonify(payload)
 
 
 @app.route("/uploads/<path:filename>")
@@ -209,30 +380,68 @@ def _resolve_clip_path(c):
     return path if os.path.exists(path) else None
 
 
+def _extract_video_audio_segment(path, trim_start, trim_end):
+    """
+    動画ファイルに埋め込まれた音声を、指定区間だけpydubのAudioSegmentとして取り出す。
+    音声トラックが無い動画、または取り出しに失敗した場合はNoneを返す。
+    """
+    dur = trim_end - trim_start
+    if dur <= 0:
+        return None
+
+    tmp_path = os.path.join(EXPORT_DIR, f"tmp_vaudio_{uuid.uuid4().hex}.wav")
+    clip = None
+    try:
+        clip = VideoFileClip(path)
+        if clip.audio is None:
+            return None
+        end = min(trim_end, clip.duration)
+        if end <= trim_start:
+            return None
+        clip.audio.subclipped(trim_start, end).write_audiofile(tmp_path, logger=None)
+        return AudioSegment.from_file(tmp_path)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        if clip is not None:
+            clip.close()
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 def build_audio_segments(clips):
-    """clipsのうち音声クリップだけを対象に、(タイムライン開始ms, AudioSegment)のリストを作る"""
+    """
+    clipsの中から実際に音になる要素を洗い出し、(タイムライン開始ms, AudioSegment)のリストを作る。
+      - kind="audio"  : そのまま音声としてトリムして追加
+      - kind="video"  : 埋め込み音声があれば、それを抽出してトリムして追加
+      - kind="image"  : 音は無いので無視
+    """
     loaded = []
     for c in clips:
         ext = c.get("ext")
         kind = c.get("kind") or ext_kind(ext)
-        if kind != "audio":
-            continue
         path = _resolve_clip_path(c)
         if not path:
             continue
 
-        audio = AudioSegment.from_file(path)
-        src_len_ms = len(audio)
+        trim_start = float(c.get("trimStart", 0))
+        trim_end = float(c.get("trimEnd", trim_start))
+        timeline_start_ms = max(0, int(max(0.0, float(c.get("timelineStart", 0))) * 1000))
 
-        trim_start_ms = max(0, int(float(c.get("trimStart", 0)) * 1000))
-        trim_end_ms = int(float(c.get("trimEnd", src_len_ms / 1000)) * 1000)
-        trim_end_ms = min(trim_end_ms, src_len_ms)
-        if trim_end_ms <= trim_start_ms:
-            continue  # 空クリップはスキップ
+        if kind == "audio":
+            audio = AudioSegment.from_file(path)
+            src_len_ms = len(audio)
+            trim_start_ms = max(0, int(trim_start * 1000))
+            trim_end_ms = min(int(trim_end * 1000), src_len_ms)
+            if trim_end_ms <= trim_start_ms:
+                continue  # 空クリップはスキップ
+            loaded.append((timeline_start_ms, audio[trim_start_ms:trim_end_ms]))
 
-        clip_audio = audio[trim_start_ms:trim_end_ms]
-        timeline_start_ms = max(0, int(float(c.get("timelineStart", 0)) * 1000))
-        loaded.append((timeline_start_ms, clip_audio))
+        elif kind == "video":
+            seg = _extract_video_audio_segment(path, trim_start, trim_end)
+            if seg is not None and len(seg) > 0:
+                loaded.append((timeline_start_ms, seg))
+
     return loaded
 
 
@@ -279,16 +488,18 @@ def export_audio(clips, fmt):
     return jsonify({"url": f"/exports/{out_name}", "filename": out_name})
 
 
-def export_video(clips):
-    # 動画合成にのみ必要な重い依存(numpy等)なので、実際にmp4を書き出す時だけ読み込む
-    try:
-        from moviepy import ImageClip, ColorClip, CompositeVideoClip, AudioFileClip
-    except ImportError:
-        return jsonify(
-            {"error": "moviepyがインストールされていません。pip install -r requirements.txt を実行してください"}
-        ), 500
+def _fit_and_place(clip, timeline_start, canvas_w, canvas_h):
+    """クリップをアスペクト比を保ったままキャンバスに収まるよう縮小し、中央配置する(レターボックス)"""
+    iw, ih = clip.size
+    scale = min(canvas_w / iw, canvas_h / ih)
+    new_size = (max(1, round(iw * scale)), max(1, round(ih * scale)))
+    return clip.resized(new_size).with_position("center").with_start(timeline_start)
 
-    image_specs = []  # [(timelineStart, duration, path), ...] 後にあるものほど上に重なる
+
+def export_video(clips):
+    image_specs = []  # [(timelineStart, duration, path), ...]
+    video_specs = []  # [(timelineStart, trimStart, trimEnd, path), ...]
+    # ↑どちらも後にある要素ほど、映像合成時に上に重なる(フロントエンドのトラック順)
     total_end_sec = 0.0
 
     for c in clips:
@@ -309,28 +520,30 @@ def export_video(clips):
 
         if kind == "image":
             image_specs.append((timeline_start, dur, path))
+        elif kind == "video":
+            video_specs.append((timeline_start, trim_start, trim_end, path))
 
-    audio_loaded = build_audio_segments(clips)
+    audio_loaded = build_audio_segments(clips)  # audio kind + 動画埋め込み音声の両方を含む
 
     if total_end_sec <= 0:
         return jsonify({"error": "有効なクリップがありません"}), 400
 
     canvas_w, canvas_h = VIDEO_CANVAS_SIZE
 
-    # 一番下に黒背景を敷き、画像クリップをタイムライン上の位置に配置して重ねる。
-    # image_specsはフロントエンドから送られてきたトラック順(=後のトラックほど上に重なる)
+    # 一番下に黒背景を敷き、画像・動画クリップをタイムライン上の位置に配置して重ねる。
     layers = [ColorClip(size=VIDEO_CANVAS_SIZE, color=(0, 0, 0), duration=total_end_sec)]
+    open_video_clips = []  # 書き出し後にcloseするために保持しておく
+
     for timeline_start, dur, path in image_specs:
         img_clip = ImageClip(path, duration=dur)
-        iw, ih = img_clip.size
-        scale = min(canvas_w / iw, canvas_h / ih)
-        new_size = (max(1, round(iw * scale)), max(1, round(ih * scale)))
-        img_clip = (
-            img_clip.resized(new_size)
-            .with_position("center")
-            .with_start(timeline_start)
-        )
-        layers.append(img_clip)
+        layers.append(_fit_and_place(img_clip, timeline_start, canvas_w, canvas_h))
+
+    for timeline_start, trim_start, trim_end, path in video_specs:
+        raw = VideoFileClip(path)
+        open_video_clips.append(raw)
+        end = min(trim_end, raw.duration)
+        sub = raw.subclipped(trim_start, end).without_audio()  # 音声は別途build_audio_segmentsで合流済み
+        layers.append(_fit_and_place(sub, timeline_start, canvas_w, canvas_h))
 
     video = CompositeVideoClip(layers, size=VIDEO_CANVAS_SIZE).with_duration(total_end_sec)
 
@@ -358,6 +571,8 @@ def export_video(clips):
         )
     finally:
         video.close()
+        for c in open_video_clips:
+            c.close()
         if tmp_audio_path and os.path.exists(tmp_audio_path):
             os.remove(tmp_audio_path)
 
@@ -374,7 +589,7 @@ def export():
         {
           "fileId": "...",
           "ext": "mp3",
-          "kind": "audio" | "image",
+          "kind": "audio" | "image" | "video",
           "trimStart": 0.0,      # 元ファイル内での開始秒
           "trimEnd": 5.2,        # 元ファイル内での終了秒(画像の場合は表示秒数の基準)
           "timelineStart": 3.0   # タイムライン上での開始秒
@@ -398,4 +613,6 @@ def export():
 
 
 if __name__ == "__main__":
+    # threaded=True: AI生成リクエストはMagic Hour側の処理完了まで数十秒〜数分ブロックするため、
+    # その間も他のリクエスト(ページ表示や他の操作)を受け付けられるようにする。
     app.run(debug=True, port=5000, threaded=True)

@@ -3,19 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>マルチトラック動画エディタ</title>
+<title>C3動画生成</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <header class="topbar">
-    <h1>🎬 マルチトラック動画エディタ</h1>
+    <h1>🎬 C3動画生成</h1>
     <div class="time-counter" id="timeCounter">
       <span id="currentTimeLabel" class="current">0:00</span> / <span id="totalTimeLabel">0:00</span>
     </div>
     <div class="toolbar">
       <label class="file-btn">
-        + ファイルを追加（音声/画像）
-        <input type="file" id="fileInput" accept="audio/*,image/*" multiple hidden>
+        + ファイルを追加（音声/画像/動画）
+        <input type="file" id="fileInput" accept="audio/*,image/*,video/*" multiple hidden>
       </label>
       <button id="playBtn" class="btn">▶ 再生</button>
       <button id="stopBtn" class="btn">■ 停止</button>
@@ -29,6 +29,7 @@
         <option value="mp3">MP3（音声のみ）</option>
       </select>
       <button id="exportBtn" class="btn primary">⬇ 書き出し(結合)</button>
+      <button id="settingsBtn" class="btn" title="Magic Hour APIキーなどの設定">⚙ 設定</button>
     </div>
   </header>
 
@@ -50,12 +51,55 @@
       <div class="empty-hint" id="emptyHint">
         「+ ファイルを追加」から音声ファイルや画像ファイルを選ぶと、ここに新しいトラックが追加されます。<br>
         画像は指定した秒数だけ表示される映像クリップとして扱われ、上のプレビューに映ります。<br>
-        クリップはドラッグで移動、端をドラッグでトリミング（画像は表示時間の伸縮）、再生ヘッド位置で「カット」できます。
+        クリップはドラッグで移動、端をドラッグでトリミング（画像は表示時間の伸縮）、再生ヘッド位置で「カット」できます。<br>
+        画像クリップを右クリックすると、AIでの動画生成・画像編集メニューが開きます。
       </div>
     </div>
   </main>
 
   <audio id="hiddenAudio" hidden></audio>
+
+  <!-- 画像クリップを右クリックした時に出るメニュー(Magic Hour AI生成) -->
+  <div id="clipContextMenu" class="context-menu hidden">
+    <button id="ctxGenVideoBtn" class="context-menu-item">この画像から動画を生成する</button>
+    <button id="ctxGenImageBtn" class="context-menu-item">新規で画像を生成する</button>
+  </div>
+
+  <!-- 上記メニューから開く、プロンプト入力パネル(動画生成/画像編集で共用) -->
+  <div id="aiActionPanel" class="ai-panel hidden">
+    <div class="ai-panel-header">
+      <span id="aiPanelTitle"></span>
+      <button id="aiPanelCloseBtn" class="ai-panel-close" title="閉じる">×</button>
+    </div>
+    <p id="aiPanelHint" class="ai-panel-hint"></p>
+    <textarea id="aiPanelPrompt" class="ai-panel-textarea" rows="3"
+      placeholder="プロンプトを入力(例：波が揺れ動いていて、景色が昼から夜へと移り変わる様子)"></textarea>
+    <div class="ai-panel-footer">
+      <button id="aiPanelSubmitBtn" class="btn primary">生成する</button>
+    </div>
+    <p id="aiPanelStatus" class="ai-panel-status"></p>
+  </div>
+
+  <!-- 設定パネル(Magic Hour APIキー) -->
+  <div id="settingsBackdrop" class="modal-backdrop hidden"></div>
+  <div id="settingsPanel" class="ai-panel settings-panel hidden">
+    <div class="ai-panel-header">
+      <span>⚙ 設定</span>
+      <button id="settingsCloseBtn" class="ai-panel-close" title="閉じる">×</button>
+    </div>
+    <p id="settingsKeyStatus" class="ai-panel-hint"></p>
+    <label class="settings-label" for="settingsApiKeyInput">Magic Hour APIキー</label>
+    <input type="password" id="settingsApiKeyInput" class="ai-panel-textarea" autocomplete="off"
+      placeholder="mhk_live_...">
+    <p class="settings-note">
+      <a href="https://magichour.ai/developer?tab=api-keys" target="_blank" rel="noopener">APIキーの取得はこちら ↗</a>
+    </p>
+    <div class="ai-panel-footer settings-footer">
+      <button id="settingsClearBtn" class="btn">キーを削除</button>
+      <button id="settingsSaveBtn" class="btn primary">保存</button>
+    </div>
+    <p id="settingsStatus" class="ai-panel-status"></p>
+  </div>
 
   <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
