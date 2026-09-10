@@ -17,6 +17,8 @@ const state = {
   rafId: null,
   playStartCtxTime: 0, // 再生開始時のAudioContext.currentTime
   _playStartSec: 0,    // 再生開始時点のタイムライン上の秒数
+  previewVideoEl: null,     // 現在「再生中」として実際にplay()させているプレビュー用<video>要素
+  previewVideoClipId: null, // ↑がどのクリップのものかを覚えておくためのclipId
 };
 
 let clipCounter = 0;
@@ -173,6 +175,23 @@ function seekAndDrawVideo(clip, offsetSec, ctx, canvasW, canvasH) {
 // 指定秒における「その時点で表示されているべきクリップ(画像 or 動画)」をプレビュー
 // canvasへ描画する。複数トラックが同じ時刻に重なっている場合は、後のトラックほど
 // 上に重なる(サーバー側の書き出しロジックと同じ規則)。該当が無ければ黒で塗りつぶす。
+//
+// 動画クリップの扱いに注意: 再生中(state.isPlaying)は、requestAnimationFrameのたびに
+// currentTimeへシークし直す実装にすると、シークは重い処理でありブラウザが追いつかず
+// 映像がとぎれとぎれになる。そのため再生中は「クリップが切り替わった瞬間」にだけ
+// 開始位置へシークしてvideoEl.play()を呼び、あとは動画自身の再生に任せて
+// 毎フレーム「今映っているフレーム」をそのまま描画するだけにする。
+// スクラブ中や停止中(state.isPlaying===false)は、そのつど正確な位置へシークして
+// 1枚だけ描画するこれまで通りの方式のままにしている。
+
+function pausePreviewVideo() {
+  if (state.previewVideoEl) {
+    state.previewVideoEl.pause();
+  }
+  state.previewVideoEl = null;
+  state.previewVideoClipId = null;
+}
+
 function updatePreview(sec) {
   const canvas = el.previewCanvas;
   if (!canvas) return;
@@ -189,15 +208,47 @@ function updatePreview(sec) {
       if (sec >= start && sec < end) activeClip = clip;
     }
   }
+
+  const stillPlayingSameVideo =
+    state.isPlaying &&
+    activeClip &&
+    activeClip.kind === "video" &&
+    state.previewVideoClipId === activeClip.clipId;
+
+  if (!stillPlayingSameVideo) pausePreviewVideo();
+
   if (!activeClip) return;
 
   if (activeClip.kind === "image") {
     loadImage(activeClip.fileId, activeClip.url)
       .then((img) => drawMediaFit(ctx, img, canvas.width, canvas.height))
       .catch(() => {});
-  } else {
-    const offsetIntoClip = activeClip.trimStart + (sec - activeClip.timelineStart);
+    return;
+  }
+
+  // ここから kind === "video"
+  const offsetIntoClip = activeClip.trimStart + (sec - activeClip.timelineStart);
+  const videoEl = getOrCreateVideoEl(activeClip.fileId, activeClip.url);
+
+  if (!state.isPlaying) {
+    // スクラブ/停止中: 対象フレームへシークしてから1回だけ描画する
     seekAndDrawVideo(activeClip, offsetIntoClip, ctx, canvas.width, canvas.height);
+    return;
+  }
+
+  if (!stillPlayingSameVideo) {
+    // このクリップの再生に入った最初のフレーム: 開始位置へシークして再生を始める
+    state.previewVideoEl = videoEl;
+    state.previewVideoClipId = activeClip.clipId;
+    videoEl.currentTime = Math.max(0, offsetIntoClip);
+    videoEl.play().catch(() => {}); // 自動再生ポリシー等で失敗しても致命的ではないため無視する
+  }
+
+  // 2フレーム目以降は改めてシークせず、動画が自然に進めている現在のフレームをそのまま描く
+  try {
+    if (videoEl.readyState >= 2) drawMediaFit(ctx, videoEl, canvas.width, canvas.height);
+  } catch (e) {
+    // デコードが追いついていない等でまだ描画できない場合は、そのフレームは諦めて次を待つ
   }
 }
 
@@ -741,6 +792,7 @@ attachScrub(el.ruler);
 
 function stopPlayback() {
   state.isPlaying = false;
+  pausePreviewVideo(); // プレビュー用に再生していた<video>があれば止める
   state.activeSources.forEach((source) => {
     try {
       source.stop();
