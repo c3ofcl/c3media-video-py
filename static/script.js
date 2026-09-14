@@ -47,6 +47,8 @@ const el = {
   aiActionPanel: document.getElementById("aiActionPanel"),
   aiPanelTitle: document.getElementById("aiPanelTitle"),
   aiPanelHint: document.getElementById("aiPanelHint"),
+  aiPanelAspectRow: document.getElementById("aiPanelAspectRow"),
+  aiPanelAspectRatio: document.getElementById("aiPanelAspectRatio"),
   aiPanelPrompt: document.getElementById("aiPanelPrompt"),
   aiPanelCloseBtn: document.getElementById("aiPanelCloseBtn"),
   aiPanelSubmitBtn: document.getElementById("aiPanelSubmitBtn"),
@@ -1030,6 +1032,37 @@ function closeAiPanel() {
   aiPanelTargetTimelineStart = 0;
 }
 
+// AI Image Editor(既存画像の編集)とAI Image Generator(新規生成)は、APIとして
+// 対応している縦横比の選択肢がそれぞれ異なる(後者はauto非対応・3種類のみ)ため、
+// モードに応じて<select>の中身を作り直す。
+function populateAspectRatioSelect(mode) {
+  const select = el.aiPanelAspectRatio;
+  select.innerHTML = "";
+  const options =
+    mode === "image"
+      ? [
+          { value: "", label: "おまかせ (auto)" },
+          { value: "1:1", label: "1:1(正方形)" },
+          { value: "16:9", label: "16:9(横長)" },
+          { value: "9:16", label: "9:16(縦長)" },
+          { value: "4:3", label: "4:3(横長)" },
+          { value: "3:2", label: "3:2(横長)" },
+          { value: "4:5", label: "4:5(縦長)" },
+          { value: "2:3", label: "2:3(縦長)" },
+        ]
+      : [
+          { value: "1:1", label: "1:1(正方形)" },
+          { value: "16:9", label: "16:9(横長)" },
+          { value: "9:16", label: "9:16(縦長)" },
+        ];
+  for (const opt of options) {
+    const optionEl = document.createElement("option");
+    optionEl.value = opt.value;
+    optionEl.textContent = opt.label;
+    select.appendChild(optionEl);
+  }
+}
+
 function openAiPanel(mode, ctx, anchorX, anchorY) {
   aiPanelMode = mode;
   el.aiPanelPrompt.value = "";
@@ -1042,13 +1075,19 @@ function openAiPanel(mode, ctx, anchorX, anchorY) {
     const dur = Math.max(1, Math.round(ctx.clip.trimEnd - ctx.clip.trimStart));
     el.aiPanelTitle.textContent = "🎬 この画像から動画を生成";
     el.aiPanelHint.textContent =
-      `長さ: ${dur}秒(このクリップのタイムライン上の長さに合わせます)。生成後、この画像は動画クリップに置き換わります。`;
+      `長さ: ${dur}秒(このクリップのタイムライン上の長さに合わせます)。動画の縦横比はMagic Hourの` +
+      `Image-to-Video APIでは個別指定できず、元になる画像の縦横比がそのまま使われます。` +
+      `特定の縦横比にしたい場合は、先に画像側(✨の2メニュー)で縦横比を指定して作った画像を` +
+      `元に生成してください。生成後、この画像は動画クリップに置き換わります。`;
     el.aiPanelPrompt.placeholder = "動きの指示(任意) 例: ゆっくりカメラが左からパンする";
+    el.aiPanelAspectRow.classList.add("hidden");
   } else if (mode === "image") {
     aiPanelTargetClipId = ctx.clip.clipId;
     el.aiPanelTitle.textContent = "✨ この画像を編集して新規生成";
     el.aiPanelHint.textContent = "この画像を元にAIで編集し、新しいトラックとして追加します。";
     el.aiPanelPrompt.placeholder = "編集内容を入力(例: 背景を夕焼けの空に変更して)";
+    populateAspectRatioSelect("image");
+    el.aiPanelAspectRow.classList.remove("hidden");
   } else {
     // "new": 元になる画像は無く、プロンプトだけから新しい画像を生成する
     aiPanelTargetTrackId = ctx.trackId;
@@ -1056,6 +1095,8 @@ function openAiPanel(mode, ctx, anchorX, anchorY) {
     el.aiPanelTitle.textContent = "✨ 新しい画像を生成";
     el.aiPanelHint.textContent = "プロンプトから新しい画像を生成し、この位置にクリップとして追加します。";
     el.aiPanelPrompt.placeholder = "画像の内容を入力(例: 夕焼けの海辺で笑う猫)";
+    populateAspectRatioSelect("new");
+    el.aiPanelAspectRow.classList.remove("hidden");
   }
 
   el.aiActionPanel.classList.remove("hidden");
@@ -1151,7 +1192,12 @@ el.aiPanelSubmitBtn.addEventListener("click", async () => {
       const res = await fetch("/api/ai/generate-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ baseFileId: clip.fileId, baseExt: clip.ext, prompt }),
+        body: JSON.stringify({
+          baseFileId: clip.fileId,
+          baseExt: clip.ext,
+          prompt,
+          aspectRatio: el.aiPanelAspectRatio.value || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "画像の生成に失敗しました");
@@ -1161,7 +1207,7 @@ el.aiPanelSubmitBtn.addEventListener("click", async () => {
       const res = await fetch("/api/ai/generate-new-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, aspectRatio: el.aiPanelAspectRatio.value || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "画像の生成に失敗しました");

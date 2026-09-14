@@ -244,7 +244,7 @@ def ai_generate_new_image():
     プロンプトだけから新しい画像を生成する。何もない位置にタイムライン上のクリップとして
     追加する用途を想定しているため、通常アップロードと同じ形式のJSON(kind: "image")を返す。
 
-    リクエストJSON: { prompt }
+    リクエストJSON: { prompt, aspectRatio? }
     """
     data = request.get_json(force=True, silent=True) or {}
     prompt = (data.get("prompt") or "").strip()
@@ -256,7 +256,11 @@ def ai_generate_new_image():
     out_path = os.path.join(UPLOAD_DIR, f"{file_id}.{out_ext}")
 
     try:
-        magic_hour_client.generate_image(prompt, out_path)
+        magic_hour_client.generate_image(
+            prompt,
+            out_path,
+            aspect_ratio=data.get("aspectRatio") or None,
+        )
     except magic_hour_client.MagicHourError as e:
         return jsonify({"error": str(e)}), 502
 
