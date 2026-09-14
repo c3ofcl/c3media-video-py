@@ -237,6 +237,33 @@ def set_magic_hour_key():
     return jsonify({"ok": True, "configured": bool(key)})
 
 
+@app.route("/api/ai/generate-new-image", methods=["POST"])
+def ai_generate_new_image():
+    """
+    新規画像生成 (AI Image Generator)。AI Image Editorと違い、元になる画像は不要で
+    プロンプトだけから新しい画像を生成する。何もない位置にタイムライン上のクリップとして
+    追加する用途を想定しているため、通常アップロードと同じ形式のJSON(kind: "image")を返す。
+
+    リクエストJSON: { prompt }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    prompt = (data.get("prompt") or "").strip()
+    if not prompt:
+        return jsonify({"error": "プロンプトを入力してください"}), 400
+
+    file_id = uuid.uuid4().hex
+    out_ext = "png"
+    out_path = os.path.join(UPLOAD_DIR, f"{file_id}.{out_ext}")
+
+    try:
+        magic_hour_client.generate_image(prompt, out_path)
+    except magic_hour_client.MagicHourError as e:
+        return jsonify({"error": str(e)}), 502
+
+    payload = _build_image_asset_response(file_id, out_ext, out_path, f"ai_image_{file_id[:8]}.{out_ext}")
+    return jsonify(payload)
+
+
 @app.route("/api/ai/generate-image", methods=["POST"])
 def ai_generate_image():
     """

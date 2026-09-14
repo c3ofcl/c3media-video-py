@@ -126,6 +126,37 @@ def _download_to(url, dest_path):
                 f.write(chunk)
 
 
+def generate_image(prompt, dest_path, model=None, aspect_ratio=None, resolution=None, tool=None):
+    """
+    AI Image Generator: プロンプトから新しい画像を1枚生成し、dest_pathに保存する。
+    AI Image Editorと違い、元になる画像は不要(テキストのみから生成する)。
+    完了したレスポンスJSON(dict)を返す。
+    https://docs.magichour.ai/api-reference/image-projects/ai-image-generator
+    """
+    style = {"prompt": prompt}
+    if tool:
+        style["tool"] = tool
+
+    body = {
+        "image_count": 1,
+        "style": style,
+    }
+    if model:
+        body["model"] = model
+    if aspect_ratio:
+        body["aspect_ratio"] = aspect_ratio
+    if resolution:
+        body["resolution"] = resolution
+
+    resp = requests.post(f"{API_BASE}/v1/ai-image-generator", headers=_headers(), json=body, timeout=30)
+    _raise_for_api_error(resp)
+    project_id = resp.json()["id"]
+
+    data = _poll_project("image-projects", project_id, IMAGE_POLL_TIMEOUT_SEC)
+    _download_to(data["downloads"][0]["url"], dest_path)
+    return data
+
+
 def edit_image(local_image_path, prompt, dest_path, model=None, aspect_ratio=None, resolution=None):
     """
     AI Image Editor: ローカル画像をアップロードしてプロンプトで編集し、

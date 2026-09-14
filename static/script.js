@@ -43,6 +43,7 @@ const el = {
   clipContextMenu: document.getElementById("clipContextMenu"),
   ctxGenVideoBtn: document.getElementById("ctxGenVideoBtn"),
   ctxGenImageBtn: document.getElementById("ctxGenImageBtn"),
+  ctxGenNewImageBtn: document.getElementById("ctxGenNewImageBtn"),
   aiActionPanel: document.getElementById("aiActionPanel"),
   aiPanelTitle: document.getElementById("aiPanelTitle"),
   aiPanelHint: document.getElementById("aiPanelHint"),
@@ -457,17 +458,6 @@ function buildClipEl(clip) {
     state.selectedClipId = clip.clipId;
     renderAll();
   });
-
-  // 画像クリップだけ、右クリックでMagic Hour AI生成メニューを開く
-  // (動画生成の元になれるのは画像のみ。音声・動画クリップは通常の右クリックメニューのまま)
-  if (clip.kind === "image") {
-    div.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      state.selectedClipId = clip.clipId;
-      renderAll();
-      openClipContextMenu(clip.clipId, e.clientX, e.clientY);
-    });
-  }
 
   attachDrag(div, clip);
   attachResize(leftHandle, clip, "left");
@@ -991,16 +981,16 @@ el.exportBtn.addEventListener("click", async () => {
 
 // ---------- Magic Hour AI生成 (画像クリップの右クリックメニュー + プロンプトパネル) ----------
 
-let aiPanelMode = null; // "video" | "image"
-let aiPanelTargetClipId = null;
+let aiPanelMode = null; // "video" | "image" | "new"
+let aiPanelTargetClipId = null;       // "video" / "image" モード: 対象クリップ
+let aiPanelTargetTrackId = null;      // "new" モード: 追加先トラック(nullなら新規トラックを作る)
+let aiPanelTargetTimelineStart = 0;   // "new" モード: タイムライン上の追加位置(秒)
 
 function closeClipContextMenu() {
   el.clipContextMenu.classList.add("hidden");
 }
 
-function openClipContextMenu(clipId, clientX, clientY) {
-  closeAiPanel();
-  el.clipContextMenu.dataset.targetClipId = clipId;
+function showContextMenuAt(clientX, clientY) {
   el.clipContextMenu.classList.remove("hidden");
   // 画面外にはみ出さないよう位置を調整
   const menuRect = el.clipContextMenu.getBoundingClientRect();
@@ -1010,30 +1000,62 @@ function openClipContextMenu(clipId, clientX, clientY) {
   el.clipContextMenu.style.top = `${Math.max(8, Math.min(clientY, maxY))}px`;
 }
 
+// 既存の画像クリップを右クリックした場合のメニュー(動画生成/画像編集)
+function openClipContextMenuForClip(clipId, clientX, clientY) {
+  closeAiPanel();
+  el.clipContextMenu.dataset.targetClipId = clipId;
+  el.ctxGenVideoBtn.classList.remove("hidden");
+  el.ctxGenImageBtn.classList.remove("hidden");
+  el.ctxGenNewImageBtn.classList.add("hidden");
+  showContextMenuAt(clientX, clientY);
+}
+
+// クリップが無い位置(トラックの空いている部分、またはトラックが1つも無い状態)を
+// 右クリックした場合のメニュー(新規画像生成)。trackIdがnullなら新しいトラックを作る。
+function openClipContextMenuForNewImage(trackId, timelineStart, clientX, clientY) {
+  closeAiPanel();
+  el.clipContextMenu.dataset.targetTrackId = trackId || "";
+  el.clipContextMenu.dataset.targetTimelineStart = String(timelineStart);
+  el.ctxGenVideoBtn.classList.add("hidden");
+  el.ctxGenImageBtn.classList.add("hidden");
+  el.ctxGenNewImageBtn.classList.remove("hidden");
+  showContextMenuAt(clientX, clientY);
+}
+
 function closeAiPanel() {
   el.aiActionPanel.classList.add("hidden");
   aiPanelMode = null;
   aiPanelTargetClipId = null;
+  aiPanelTargetTrackId = null;
+  aiPanelTargetTimelineStart = 0;
 }
 
-function openAiPanel(mode, clip, anchorX, anchorY) {
+function openAiPanel(mode, ctx, anchorX, anchorY) {
   aiPanelMode = mode;
-  aiPanelTargetClipId = clip.clipId;
   el.aiPanelPrompt.value = "";
   el.aiPanelStatus.textContent = "";
   el.aiPanelStatus.classList.remove("error");
   el.aiPanelSubmitBtn.disabled = false;
 
   if (mode === "video") {
-    const dur = Math.max(1, Math.round(clip.trimEnd - clip.trimStart));
+    aiPanelTargetClipId = ctx.clip.clipId;
+    const dur = Math.max(1, Math.round(ctx.clip.trimEnd - ctx.clip.trimStart));
     el.aiPanelTitle.textContent = "🎬 この画像から動画を生成";
     el.aiPanelHint.textContent =
       `長さ: ${dur}秒(このクリップのタイムライン上の長さに合わせます)。生成後、この画像は動画クリップに置き換わります。`;
     el.aiPanelPrompt.placeholder = "動きの指示(任意) 例: ゆっくりカメラが左からパンする";
-  } else {
+  } else if (mode === "image") {
+    aiPanelTargetClipId = ctx.clip.clipId;
     el.aiPanelTitle.textContent = "✨ この画像を編集して新規生成";
     el.aiPanelHint.textContent = "この画像を元にAIで編集し、新しいトラックとして追加します。";
     el.aiPanelPrompt.placeholder = "編集内容を入力(例: 背景を夕焼けの空に変更して)";
+  } else {
+    // "new": 元になる画像は無く、プロンプトだけから新しい画像を生成する
+    aiPanelTargetTrackId = ctx.trackId;
+    aiPanelTargetTimelineStart = ctx.timelineStart;
+    el.aiPanelTitle.textContent = "✨ 新しい画像を生成";
+    el.aiPanelHint.textContent = "プロンプトから新しい画像を生成し、この位置にクリップとして追加します。";
+    el.aiPanelPrompt.placeholder = "画像の内容を入力(例: 夕焼けの海辺で笑う猫)";
   }
 
   el.aiActionPanel.classList.remove("hidden");
@@ -1051,7 +1073,7 @@ el.ctxGenVideoBtn.addEventListener("click", (e) => {
   const rect = el.clipContextMenu.getBoundingClientRect(); // 閉じる前に位置を取得
   closeClipContextMenu();
   if (!found) return;
-  openAiPanel("video", found.clip, rect.left, rect.top);
+  openAiPanel("video", { clip: found.clip }, rect.left, rect.top);
 });
 
 el.ctxGenImageBtn.addEventListener("click", (e) => {
@@ -1060,22 +1082,37 @@ el.ctxGenImageBtn.addEventListener("click", (e) => {
   const rect = el.clipContextMenu.getBoundingClientRect();
   closeClipContextMenu();
   if (!found) return;
-  openAiPanel("image", found.clip, rect.left, rect.top);
+  openAiPanel("image", { clip: found.clip }, rect.left, rect.top);
+});
+
+el.ctxGenNewImageBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const trackId = el.clipContextMenu.dataset.targetTrackId || null;
+  const timelineStart = parseFloat(el.clipContextMenu.dataset.targetTimelineStart || "0");
+  const rect = el.clipContextMenu.getBoundingClientRect();
+  closeClipContextMenu();
+  openAiPanel("new", { trackId, timelineStart }, rect.left, rect.top);
 });
 
 el.aiPanelCloseBtn.addEventListener("click", closeAiPanel);
 
 el.aiPanelSubmitBtn.addEventListener("click", async () => {
-  const found = findClip(aiPanelTargetClipId);
-  if (!found) {
-    el.aiPanelStatus.textContent = "対象のクリップが見つかりません(削除された可能性があります)";
-    el.aiPanelStatus.classList.add("error");
-    return;
+  const mode = aiPanelMode;
+  let clip = null;
+
+  if (mode === "video" || mode === "image") {
+    const found = findClip(aiPanelTargetClipId);
+    if (!found) {
+      el.aiPanelStatus.textContent = "対象のクリップが見つかりません(削除された可能性があります)";
+      el.aiPanelStatus.classList.add("error");
+      return;
+    }
+    clip = found.clip;
   }
-  const { clip } = found;
+
   const prompt = el.aiPanelPrompt.value.trim();
 
-  if (aiPanelMode === "image" && !prompt) {
+  if ((mode === "image" || mode === "new") && !prompt) {
     el.aiPanelStatus.textContent = "プロンプトを入力してください";
     el.aiPanelStatus.classList.add("error");
     return;
@@ -1090,7 +1127,8 @@ el.aiPanelSubmitBtn.addEventListener("click", async () => {
   };
   tick();
   const intervalId = setInterval(tick, 1000);
-  const mode = aiPanelMode; // fetch待ちの間に閉じられても参照できるよう退避しておく
+  const targetTrackId = aiPanelTargetTrackId; // fetch待ちの間に閉じられても参照できるよう退避しておく
+  const targetTimelineStart = aiPanelTargetTimelineStart;
 
   try {
     if (mode === "video") {
@@ -1109,7 +1147,7 @@ el.aiPanelSubmitBtn.addEventListener("click", async () => {
       if (!res.ok) throw new Error(data.error || "動画の生成に失敗しました");
       replaceClipWithAsset(clip, data);
       setStatus("動画を生成し、タイムラインのクリップと置き換えました");
-    } else {
+    } else if (mode === "image") {
       const res = await fetch("/api/ai/generate-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1119,6 +1157,16 @@ el.aiPanelSubmitBtn.addEventListener("click", async () => {
       if (!res.ok) throw new Error(data.error || "画像の生成に失敗しました");
       addTrackFromAssetResponse(data);
       setStatus("AIで編集した画像を新しいトラックとして追加しました");
+    } else {
+      const res = await fetch("/api/ai/generate-new-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "画像の生成に失敗しました");
+      addNewImageClipAt(data, targetTrackId, targetTimelineStart);
+      setStatus("新しい画像を生成してタイムラインに追加しました");
     }
     clearInterval(intervalId);
     closeAiPanel();
@@ -1156,18 +1204,98 @@ function replaceClipWithAsset(oldClip, data) {
   preloadClipMedia(newClip);
 }
 
+// 新規生成した画像を、指定したトラックの指定位置にクリップとして追加する。
+// trackIdがnull、または該当トラックが見つからない場合は新しいトラックを作る。
+function addNewImageClipAt(data, trackId, timelineStart) {
+  const track = trackId ? state.tracks.find((t) => t.trackId === trackId) : null;
+
+  const clip = {
+    clipId: `c${++clipCounter}`,
+    fileId: data.id,
+    ext: data.ext,
+    kind: data.kind || "image",
+    filename: data.filename,
+    url: data.url,
+    srcDuration: data.maxDuration ?? data.duration,
+    trimStart: 0,
+    trimEnd: data.duration,
+    timelineStart: Math.max(0, timelineStart || 0),
+    trackId: null,
+  };
+
+  if (track) {
+    clip.trackId = track.trackId;
+    track.clips.push(clip);
+  } else {
+    trackCounter += 1;
+    const newTrackId = `t${trackCounter}`;
+    clip.trackId = newTrackId;
+    state.tracks.push({ trackId: newTrackId, label: data.filename, clips: [clip] });
+  }
+
+  state.selectedClipId = clip.clipId;
+  preloadClipMedia(clip);
+}
+
 // メニュー/パネルの外側をクリックしたら閉じる
 document.addEventListener("click", (e) => {
   if (!el.clipContextMenu.contains(e.target)) closeClipContextMenu();
   if (!el.aiActionPanel.contains(e.target)) closeAiPanel();
 });
 
-// 画像クリップ以外を右クリックした場合は、開いていたカスタムUIを閉じて通常のメニューに任せる
+// 右クリックの一括ハンドリング:
+//   - 画像クリップ上            -> 動画生成/画像編集メニュー
+//   - トラックラベル上          -> 対象外(通常のブラウザメニューに任せる)
+//   - トラックレーンの空き部分  -> そのトラック・その位置に新規画像生成メニュー
+//   - タイムライン領域のそれ以外(トラックが1つも無い場合の空欄など)
+//                               -> 新しいトラックの先頭に新規画像生成メニュー
+//   - それ以外(ツールバー等)   -> 通常のブラウザメニューに任せ、開いていたUIは閉じる
 document.addEventListener("contextmenu", (e) => {
-  if (!e.target.closest(".clip.clip-image")) {
+  const clipEl = e.target.closest(".clip.clip-image");
+  if (clipEl) {
+    e.preventDefault();
+    const clipId = clipEl.dataset.clipId;
+    state.selectedClipId = clipId;
+    renderAll();
+    openClipContextMenuForClip(clipId, e.clientX, e.clientY);
+    return;
+  }
+
+  if (e.target.closest(".clip")) {
+    // 音声/動画クリップは対象外。通常のブラウザメニューに任せ、開いていたUIは閉じる
     closeClipContextMenu();
     closeAiPanel();
+    return;
   }
+
+  if (e.target.closest(".track-label")) {
+    closeClipContextMenu();
+    closeAiPanel();
+    return;
+  }
+
+  const laneEl = e.target.closest(".track-lane");
+  if (laneEl) {
+    e.preventDefault();
+    const trackId = laneEl.dataset.trackId || null;
+    const rect = laneEl.getBoundingClientRect();
+    let sec = Math.max(0, (e.clientX - rect.left) / PX_PER_SEC);
+    const snapDelta = bestSnapDelta(sec, collectSnapCandidates());
+    if (snapDelta !== null) sec = Math.max(0, sec + snapDelta);
+    openClipContextMenuForNewImage(trackId, sec, e.clientX, e.clientY);
+    return;
+  }
+
+  if (e.target.closest("#tracksContainer")) {
+    // トラックが1つも無い状態(空のヒント文言など)を右クリックした場合、
+    // 新しいトラックの先頭(0秒)に追加する
+    e.preventDefault();
+    openClipContextMenuForNewImage(null, 0, e.clientX, e.clientY);
+    return;
+  }
+
+  closeClipContextMenu();
+  closeAiPanel();
 });
 
 document.addEventListener("keydown", (e) => {

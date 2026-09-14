@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>C3動画生成</title>
+<title>マルチトラック動画エディタ</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <header class="topbar">
-    <h1>🎬 C3動画生成</h1>
+    <h1>🎬 マルチトラック動画エディタ</h1>
     <div class="time-counter" id="timeCounter">
       <span id="currentTimeLabel" class="current">0:00</span> / <span id="totalTimeLabel">0:00</span>
     </div>
@@ -52,7 +52,8 @@
         「+ ファイルを追加」から音声ファイルや画像ファイルを選ぶと、ここに新しいトラックが追加されます。<br>
         画像は指定した秒数だけ表示される映像クリップとして扱われ、上のプレビューに映ります。<br>
         クリップはドラッグで移動、端をドラッグでトリミング（画像は表示時間の伸縮）、再生ヘッド位置で「カット」できます。<br>
-        画像クリップを右クリックすると、AIでの動画生成・画像編集メニューが開きます。
+        画像クリップを右クリックすると、AIでの動画生成・画像編集メニューが開きます。<br>
+        クリップが無い部分を右クリックすると、プロンプトから新しい画像をその位置に生成できます。
       </div>
     </div>
   </main>
@@ -61,8 +62,9 @@
 
   <!-- 画像クリップを右クリックした時に出るメニュー(Magic Hour AI生成) -->
   <div id="clipContextMenu" class="context-menu hidden">
-    <button id="ctxGenVideoBtn" class="context-menu-item">この画像から動画を生成する</button>
-    <button id="ctxGenImageBtn" class="context-menu-item">新規で画像を生成する</button>
+    <button id="ctxGenVideoBtn" class="context-menu-item">🎬 この画像から動画を生成</button>
+    <button id="ctxGenImageBtn" class="context-menu-item">✨ この画像を編集して新規生成</button>
+    <button id="ctxGenNewImageBtn" class="context-menu-item">✨ 新しい画像を生成</button>
   </div>
 
   <!-- 上記メニューから開く、プロンプト入力パネル(動画生成/画像編集で共用) -->
@@ -73,7 +75,7 @@
     </div>
     <p id="aiPanelHint" class="ai-panel-hint"></p>
     <textarea id="aiPanelPrompt" class="ai-panel-textarea" rows="3"
-      placeholder="プロンプトを入力(例：波が揺れ動いていて、景色が昼から夜へと移り変わる様子)"></textarea>
+      placeholder="プロンプトを入力(例: 夕焼けの空にゆっくりカメラが左からパンする)"></textarea>
     <div class="ai-panel-footer">
       <button id="aiPanelSubmitBtn" class="btn primary">生成する</button>
     </div>
