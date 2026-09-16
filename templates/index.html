@@ -53,18 +53,22 @@
         画像は指定した秒数だけ表示される映像クリップとして扱われ、上のプレビューに映ります。<br>
         クリップはドラッグで移動、端をドラッグでトリミング（画像は表示時間の伸縮）、再生ヘッド位置で「カット」できます。<br>
         画像クリップを右クリックすると、AIでの動画生成・画像編集メニューが開きます。<br>
-        クリップが無い部分を右クリックすると、プロンプトから新しい画像をその位置に生成できます。
+        クリップが無い部分を右クリックすると、プロンプトから新しい画像を生成したり、
+        テキスト(字幕・タイトルなど)を追加したりできます。テキストクリップは右クリックで
+        内容・フォント・配置を編集できます。
       </div>
     </div>
   </main>
 
   <audio id="hiddenAudio" hidden></audio>
 
-  <!-- 画像クリップを右クリックした時に出るメニュー(Magic Hour AI生成) -->
+  <!-- 画像/テキストクリップ、および空いている部分を右クリックした時に出るメニュー -->
   <div id="clipContextMenu" class="context-menu hidden">
     <button id="ctxGenVideoBtn" class="context-menu-item">🎬 この画像から動画を生成</button>
     <button id="ctxGenImageBtn" class="context-menu-item">✨ この画像を編集して新規生成</button>
     <button id="ctxGenNewImageBtn" class="context-menu-item">✨ 新しい画像を生成</button>
+    <button id="ctxAddTextBtn" class="context-menu-item">📝 テキストを追加</button>
+    <button id="ctxEditTextBtn" class="context-menu-item">✏️ テキストを編集</button>
   </div>
 
   <!-- 上記メニューから開く、プロンプト入力パネル(動画生成/画像編集で共用) -->
@@ -84,6 +88,44 @@
       <button id="aiPanelSubmitBtn" class="btn primary">生成する</button>
     </div>
     <p id="aiPanelStatus" class="ai-panel-status"></p>
+  </div>
+
+  <!-- テキストクリップの追加/編集パネル -->
+  <div id="textEditPanel" class="ai-panel hidden">
+    <div class="ai-panel-header">
+      <span id="textPanelTitle">📝 テキストを追加</span>
+      <button id="textPanelCloseBtn" class="ai-panel-close" title="閉じる">×</button>
+    </div>
+    <textarea id="textPanelContent" class="ai-panel-textarea" rows="2"
+      placeholder="表示するテキストを入力(改行できます)"></textarea>
+    <div class="ai-panel-row">
+      <label class="settings-label" for="textPanelFont">フォント</label>
+      <select id="textPanelFont" class="select">
+        <option value="noto-sans-jp">Noto Sans JP(標準)</option>
+        <option value="noto-serif-jp">Noto Serif JP(明朝体)</option>
+        <option value="dela-gothic-one">Dela Gothic One(極太)</option>
+        <option value="zen-maru-gothic">Zen Maru Gothic(丸ゴシック)</option>
+      </select>
+    </div>
+    <div id="textPanelPreview" class="text-panel-font-preview"></div>
+    <div class="ai-panel-row">
+      <span class="settings-label">配置</span>
+      <div id="textPanelPositionGrid" class="position-grid">
+        <button type="button" class="position-btn" data-pos="top-left" title="左上">↖</button>
+        <button type="button" class="position-btn" data-pos="top-center" title="上">↑</button>
+        <button type="button" class="position-btn" data-pos="top-right" title="右上">↗</button>
+        <button type="button" class="position-btn" data-pos="middle-left" title="左">←</button>
+        <button type="button" class="position-btn" data-pos="middle-center" title="中央">●</button>
+        <button type="button" class="position-btn" data-pos="middle-right" title="右">→</button>
+        <button type="button" class="position-btn" data-pos="bottom-left" title="左下">↙</button>
+        <button type="button" class="position-btn" data-pos="bottom-center" title="下">↓</button>
+        <button type="button" class="position-btn" data-pos="bottom-right" title="右下">↘</button>
+      </div>
+    </div>
+    <div class="ai-panel-footer">
+      <button id="textPanelSubmitBtn" class="btn primary">追加する</button>
+    </div>
+    <p id="textPanelStatus" class="ai-panel-status"></p>
   </div>
 
   <!-- 設定パネル(Magic Hour APIキー) -->

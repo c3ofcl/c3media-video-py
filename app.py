@@ -43,8 +43,8 @@ load_dotenv(ENV_PATH)
 
 from flask import Flask, request, jsonify, send_from_directory, render_template
 from pydub import AudioSegment
-from PIL import Image, ImageOps
-from moviepy import ImageClip, VideoFileClip, ColorClip, CompositeVideoClip, AudioFileClip
+from PIL import Image, ImageOps, ImageFont
+from moviepy import ImageClip, VideoFileClip, ColorClip, CompositeVideoClip, AudioFileClip, TextClip
 
 import magic_hour_client
 
@@ -70,6 +70,53 @@ MAX_IMAGE_DURATION_SEC = 600.0
 # 余白は黒で埋める。
 VIDEO_CANVAS_SIZE = (1280, 720)
 VIDEO_FPS = 30
+
+# ---------- テキストクリップ ----------
+# プレビュー(ブラウザのcanvas)と書き出し(下記TextClip)の両方で同じフォントファイルを
+# 直接参照することで、見た目が食い違わないようにしている。キーはフロントエンドの
+# script.js内のFONT_REGISTRYと対応しているので、増減する場合は両方を変更すること。
+FONTS_DIR = os.path.join(BASE_DIR, "static", "fonts")
+FONT_REGISTRY = {
+    "noto-sans-jp": "NotoSansJP-Variable.ttf",
+    "noto-serif-jp": "NotoSerifJP-Variable.ttf",
+    "dela-gothic-one": "DelaGothicOne-Regular.ttf",
+    "zen-maru-gothic": "ZenMaruGothic-Bold.ttf",
+}
+DEFAULT_FONT_KEY = "noto-sans-jp"
+DEFAULT_TEXT_DURATION_SEC = 5.0
+MAX_TEXT_DURATION_SEC = 600.0
+TEXT_FONT_SIZE = 48
+TEXT_MARGIN_PX = 40
+TEXT_MAX_WIDTH_RATIO = 0.86  # キャンバス幅に対する、テキストボックスの最大幅の割合(はみ出し防止の折り返し用)
+
+
+def _font_path(font_key):
+    filename = FONT_REGISTRY.get(font_key) or FONT_REGISTRY[DEFAULT_FONT_KEY]
+    return os.path.join(FONTS_DIR, filename)
+
+
+def _text_anchor_xy(position, clip_w, clip_h, canvas_w, canvas_h):
+    """
+    position: "top-left"などの"<縦位置>-<横位置>"形式の9方位(縦: top/middle/bottom,
+    横: left/center/right)。テキストクリップの左上座標(x, y)を返す。
+    """
+    vertical, _, horizontal = (position or "bottom-center").partition("-")
+
+    if horizontal == "left":
+        x = TEXT_MARGIN_PX
+    elif horizontal == "right":
+        x = canvas_w - clip_w - TEXT_MARGIN_PX
+    else:
+        x = (canvas_w - clip_w) / 2
+
+    if vertical == "top":
+        y = TEXT_MARGIN_PX
+    elif vertical == "bottom":
+        y = canvas_h - clip_h - TEXT_MARGIN_PX
+    else:
+        y = (canvas_h - clip_h) / 2
+
+    return (x, y)
 
 if not os.environ.get("MAGIC_HOUR_API_KEY", "").strip():
     print("[情報] MAGIC_HOUR_API_KEYが未設定です。AI画像生成/動画生成機能を使う場合は、")
@@ -446,6 +493,7 @@ def build_audio_segments(clips):
       - kind="audio"  : そのまま音声としてトリムして追加
       - kind="video"  : 埋め込み音声があれば、それを抽出してトリムして追加
       - kind="image"  : 音は無いので無視
+      - kind="text"   : 音は無いので無視(fileId/extが無く_resolve_clip_pathがNoneを返すため自然にスキップされる)
     """
     loaded = []
     for c in clips:
@@ -519,6 +567,31 @@ def export_audio(clips, fmt):
     return jsonify({"url": f"/exports/{out_name}", "filename": out_name})
 
 
+def _wrap_text_to_width(text, font_path, font_size, max_width_px):
+    """
+    「caption」モードはテキストの長さに関わらず指定した幅いっぱいの箱になってしまい、
+    (今回のような)9方位への正確な配置ができなくなる。そこで自前で文字単位の折り返しを
+    行い、実際の内容にぴったり収まる「label」モードで使う。単語区切り(スペース)が無い
+    日本語でも問題なく折り返せるよう、単語単位ではなく1文字ずつ幅を測って折り返す。
+    """
+    font = ImageFont.truetype(font_path, font_size)
+    out_lines = []
+    for raw_line in text.split("\n"):
+        if not raw_line:
+            out_lines.append("")
+            continue
+        current = ""
+        for ch in raw_line:
+            trial = current + ch
+            if font.getlength(trial) > max_width_px and current:
+                out_lines.append(current)
+                current = ch
+            else:
+                current = trial
+        out_lines.append(current)
+    return "\n".join(out_lines)
+
+
 def _fit_and_place(clip, timeline_start, canvas_w, canvas_h):
     """クリップをアスペクト比を保ったままキャンバスに収まるよう縮小し、中央配置する(レターボックス)"""
     iw, ih = clip.size
@@ -530,21 +603,31 @@ def _fit_and_place(clip, timeline_start, canvas_w, canvas_h):
 def export_video(clips):
     image_specs = []  # [(timelineStart, duration, path), ...]
     video_specs = []  # [(timelineStart, trimStart, trimEnd, path), ...]
-    # ↑どちらも後にある要素ほど、映像合成時に上に重なる(フロントエンドのトラック順)
+    text_specs = []  # [(timelineStart, duration, text, fontKey, position), ...]
+    # ↑いずれも後にある要素ほど、映像合成時に上に重なる(フロントエンドのトラック順)。
+    # テキストは常に画像・動画より後に(=一番上に)重ねる。
     total_end_sec = 0.0
 
     for c in clips:
-        ext = c.get("ext")
-        kind = c.get("kind") or ext_kind(ext)
-        path = _resolve_clip_path(c)
-        if not path:
-            continue
+        kind = c.get("kind") or ext_kind(c.get("ext"))
 
         trim_start = float(c.get("trimStart", 0))
         trim_end = float(c.get("trimEnd", trim_start))
         timeline_start = max(0.0, float(c.get("timelineStart", 0)))
         dur = trim_end - trim_start
         if dur <= 0:
+            continue
+
+        if kind == "text":
+            text = (c.get("text") or "").strip()
+            if not text:
+                continue
+            total_end_sec = max(total_end_sec, timeline_start + dur)
+            text_specs.append((timeline_start, dur, text, c.get("fontKey"), c.get("position")))
+            continue
+
+        path = _resolve_clip_path(c)
+        if not path:
             continue
 
         total_end_sec = max(total_end_sec, timeline_start + dur)
@@ -575,6 +658,25 @@ def export_video(clips):
         end = min(trim_end, raw.duration)
         sub = raw.subclipped(trim_start, end).without_audio()  # 音声は別途build_audio_segmentsで合流済み
         layers.append(_fit_and_place(sub, timeline_start, canvas_w, canvas_h))
+
+    # テキストは画像・動画より後に追加することで、常に一番上に重なるようにする
+    for timeline_start, dur, text, font_key, position in text_specs:
+        font_path = _font_path(font_key)
+        max_width_px = canvas_w * TEXT_MAX_WIDTH_RATIO
+        wrapped = _wrap_text_to_width(text, font_path, TEXT_FONT_SIZE, max_width_px)
+        txt_clip = TextClip(
+            font=font_path,
+            text=wrapped,
+            font_size=TEXT_FONT_SIZE,
+            color="white",
+            stroke_color="black",
+            stroke_width=max(1, TEXT_FONT_SIZE // 16),
+            method="label",  # 自前で折り返し済みなので、実際の内容にぴったり収まるlabelを使う
+            text_align="center",
+            duration=dur,
+        )
+        xy = _text_anchor_xy(position, txt_clip.w, txt_clip.h, canvas_w, canvas_h)
+        layers.append(txt_clip.with_position(xy).with_start(timeline_start))
 
     video = CompositeVideoClip(layers, size=VIDEO_CANVAS_SIZE).with_duration(total_end_sec)
 
@@ -624,6 +726,16 @@ def export():
           "trimStart": 0.0,      # 元ファイル内での開始秒
           "trimEnd": 5.2,        # 元ファイル内での終了秒(画像の場合は表示秒数の基準)
           "timelineStart": 3.0   # タイムライン上での開始秒
+        },
+        {
+          # テキストクリップはfileId/extを持たない代わりに以下を持つ
+          "kind": "text",
+          "text": "表示するテキスト",
+          "fontKey": "noto-sans-jp",   # FONT_REGISTRYのキー
+          "position": "bottom-center", # 9方位(縦: top/middle/bottom, 横: left/center/right)
+          "trimStart": 0.0,
+          "trimEnd": 5.0,               # 画像同様、表示秒数の基準
+          "timelineStart": 3.0
         },
         ...
       ]

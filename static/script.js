@@ -5,6 +5,21 @@ const LABEL_WIDTH = 150;
 const GRID_SNAP_SEC = 1; // グリッドスナップの間隔(秒)。track-laneの背景の縦線(1秒間隔)と揃えている
 const SNAP_PX_THRESHOLD = 8; // スナップが効く距離(px)。PX_PER_SECで秒に換算して使う
 
+// テキストクリップ用フォント。キーはapp.py側のFONT_REGISTRYと対応させること。
+// cssFamilyはstyle.css内の@font-faceで定義したfont-family名。
+const FONT_REGISTRY = {
+  "noto-sans-jp": { label: "Noto Sans JP(標準)", cssFamily: "AppFont-NotoSansJP" },
+  "noto-serif-jp": { label: "Noto Serif JP(明朝体)", cssFamily: "AppFont-NotoSerifJP" },
+  "dela-gothic-one": { label: "Dela Gothic One(極太)", cssFamily: "AppFont-DelaGothicOne" },
+  "zen-maru-gothic": { label: "Zen Maru Gothic(丸ゴシック)", cssFamily: "AppFont-ZenMaruGothic" },
+};
+const DEFAULT_FONT_KEY = "noto-sans-jp";
+const DEFAULT_TEXT_DURATION_SEC = 5.0; // 画像クリップと同じ既定の表示秒数
+const MAX_TEXT_DURATION_SEC = 600.0; // 画像クリップと同じ、右ハンドルで伸ばせる上限
+const TEXT_FONT_SIZE = 48; // サーバー側(app.pyのTEXT_FONT_SIZE)と揃えること
+const TEXT_MARGIN_PX = 40; // サーバー側(app.pyのTEXT_MARGIN_PX)と揃えること
+const TEXT_MAX_WIDTH_RATIO = 0.86; // サーバー側(app.pyのTEXT_MAX_WIDTH_RATIO)と揃えること
+
 const state = {
   tracks: [],       // [{trackId, label, clips: [clip, ...]}]
   selectedClipId: null,
@@ -44,6 +59,8 @@ const el = {
   ctxGenVideoBtn: document.getElementById("ctxGenVideoBtn"),
   ctxGenImageBtn: document.getElementById("ctxGenImageBtn"),
   ctxGenNewImageBtn: document.getElementById("ctxGenNewImageBtn"),
+  ctxAddTextBtn: document.getElementById("ctxAddTextBtn"),
+  ctxEditTextBtn: document.getElementById("ctxEditTextBtn"),
   aiActionPanel: document.getElementById("aiActionPanel"),
   aiPanelTitle: document.getElementById("aiPanelTitle"),
   aiPanelHint: document.getElementById("aiPanelHint"),
@@ -62,6 +79,15 @@ const el = {
   settingsSaveBtn: document.getElementById("settingsSaveBtn"),
   settingsClearBtn: document.getElementById("settingsClearBtn"),
   settingsStatus: document.getElementById("settingsStatus"),
+  textEditPanel: document.getElementById("textEditPanel"),
+  textPanelTitle: document.getElementById("textPanelTitle"),
+  textPanelContent: document.getElementById("textPanelContent"),
+  textPanelFont: document.getElementById("textPanelFont"),
+  textPanelPreview: document.getElementById("textPanelPreview"),
+  textPanelPositionGrid: document.getElementById("textPanelPositionGrid"),
+  textPanelCloseBtn: document.getElementById("textPanelCloseBtn"),
+  textPanelSubmitBtn: document.getElementById("textPanelSubmitBtn"),
+  textPanelStatus: document.getElementById("textPanelStatus"),
 };
 
 function setStatus(msg, isError = false) {
@@ -195,6 +221,83 @@ function pausePreviewVideo() {
   state.previewVideoClipId = null;
 }
 
+// ---------- テキストクリップの描画 ----------
+// サーバー側(app.pyの_wrap_text_to_width / _text_anchor_xy)と同じ考え方で折り返し・
+// 配置を行う。スペースの無い日本語でも折り返せるよう、単語単位ではなく1文字ずつ幅を
+// 測って折り返す。canvasのテキスト描画とPillow/moviepyのテキスト描画は仕組みが違うため
+// ピクセル単位では一致しないが、プレビューとしては十分な近似になる(正確な見た目は
+// 書き出し結果が基準)。
+function wrapTextToWidth(ctx, text, maxWidthPx) {
+  const outLines = [];
+  for (const rawLine of text.split("\n")) {
+    if (!rawLine) {
+      outLines.push("");
+      continue;
+    }
+    let current = "";
+    for (const ch of rawLine) {
+      const trial = current + ch;
+      if (ctx.measureText(trial).width > maxWidthPx && current) {
+        outLines.push(current);
+        current = ch;
+      } else {
+        current = trial;
+      }
+    }
+    outLines.push(current);
+  }
+  return outLines;
+}
+
+function textClipFontCss(fontKey) {
+  const info = FONT_REGISTRY[fontKey] || FONT_REGISTRY[DEFAULT_FONT_KEY];
+  return `${TEXT_FONT_SIZE}px "${info.cssFamily}"`;
+}
+
+function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
+  ctx.font = textClipFontCss(clip.fontKey);
+  const lineHeight = TEXT_FONT_SIZE * 1.3;
+  const maxWidthPx = canvasW * TEXT_MAX_WIDTH_RATIO;
+  const lines = wrapTextToWidth(ctx, clip.text || "", maxWidthPx);
+  const blockWidth = Math.max(1, ...lines.map((l) => ctx.measureText(l).width));
+  const blockHeight = lines.length * lineHeight;
+
+  const [vertical, horizontal] = (clip.position || "bottom-center").split("-");
+  let blockX;
+  if (horizontal === "left") blockX = TEXT_MARGIN_PX;
+  else if (horizontal === "right") blockX = canvasW - blockWidth - TEXT_MARGIN_PX;
+  else blockX = (canvasW - blockWidth) / 2;
+
+  let blockY;
+  if (vertical === "top") blockY = TEXT_MARGIN_PX;
+  else if (vertical === "bottom") blockY = canvasH - blockHeight - TEXT_MARGIN_PX;
+  else blockY = (canvasH - blockHeight) / 2;
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(2, Math.round(TEXT_FONT_SIZE / 8));
+  ctx.strokeStyle = "black";
+  ctx.fillStyle = "white";
+
+  lines.forEach((line, i) => {
+    const cx = blockX + blockWidth / 2;
+    const cy = blockY + i * lineHeight + TEXT_FONT_SIZE * 0.85;
+    ctx.strokeText(line, cx, cy);
+    ctx.fillText(line, cx, cy);
+  });
+}
+
+function drawTextOverlays(ctx, textClips, canvasW, canvasH) {
+  for (const clip of textClips) {
+    try {
+      drawSingleTextClip(ctx, clip, canvasW, canvasH);
+    } catch (e) {
+      // フォント未読込などで失敗しても他のクリップの描画は止めない
+    }
+  }
+}
+
 function updatePreview(sec) {
   const canvas = el.previewCanvas;
   if (!canvas) return;
@@ -202,57 +305,68 @@ function updatePreview(sec) {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  let activeClip = null;
+  let activeVisual = null;
+  const activeTexts = [];
   for (const track of state.tracks) {
     for (const clip of track.clips) {
-      if (clip.kind !== "image" && clip.kind !== "video") continue;
       const start = clip.timelineStart;
       const end = start + (clip.trimEnd - clip.trimStart);
-      if (sec >= start && sec < end) activeClip = clip;
+      if (sec < start || sec >= end) continue;
+      if (clip.kind === "image" || clip.kind === "video") {
+        activeVisual = clip; // 後のトラックほど上に重なる
+      } else if (clip.kind === "text") {
+        activeTexts.push(clip); // 複数重なっていてもすべて描く(後のトラックほど上)
+      }
     }
   }
 
   const stillPlayingSameVideo =
     state.isPlaying &&
-    activeClip &&
-    activeClip.kind === "video" &&
-    state.previewVideoClipId === activeClip.clipId;
+    activeVisual &&
+    activeVisual.kind === "video" &&
+    state.previewVideoClipId === activeVisual.clipId;
 
   if (!stillPlayingSameVideo) pausePreviewVideo();
 
-  if (!activeClip) return;
-
-  if (activeClip.kind === "image") {
-    loadImage(activeClip.fileId, activeClip.url)
-      .then((img) => drawMediaFit(ctx, img, canvas.width, canvas.height))
+  if (activeVisual && activeVisual.kind === "image") {
+    loadImage(activeVisual.fileId, activeVisual.url)
+      .then((img) => {
+        drawMediaFit(ctx, img, canvas.width, canvas.height);
+        drawTextOverlays(ctx, activeTexts, canvas.width, canvas.height);
+      })
       .catch(() => {});
     return;
   }
 
-  // ここから kind === "video"
-  const offsetIntoClip = activeClip.trimStart + (sec - activeClip.timelineStart);
-  const videoEl = getOrCreateVideoEl(activeClip.fileId, activeClip.url);
+  if (activeVisual && activeVisual.kind === "video") {
+    const offsetIntoClip = activeVisual.trimStart + (sec - activeVisual.timelineStart);
+    const videoEl = getOrCreateVideoEl(activeVisual.fileId, activeVisual.url);
 
-  if (!state.isPlaying) {
-    // スクラブ/停止中: 対象フレームへシークしてから1回だけ描画する
-    seekAndDrawVideo(activeClip, offsetIntoClip, ctx, canvas.width, canvas.height);
-    return;
+    if (!state.isPlaying) {
+      // スクラブ/停止中: 対象フレームへシークしてから1回だけ描画する
+      seekAndDrawVideo(activeVisual, offsetIntoClip, ctx, canvas.width, canvas.height);
+      drawTextOverlays(ctx, activeTexts, canvas.width, canvas.height);
+      return;
+    }
+
+    if (!stillPlayingSameVideo) {
+      // このクリップの再生に入った最初のフレーム: 開始位置へシークして再生を始める
+      state.previewVideoEl = videoEl;
+      state.previewVideoClipId = activeVisual.clipId;
+      videoEl.currentTime = Math.max(0, offsetIntoClip);
+      videoEl.play().catch(() => {}); // 自動再生ポリシー等で失敗しても致命的ではないため無視する
+    }
+
+    // 2フレーム目以降は改めてシークせず、動画が自然に進めている現在のフレームをそのまま描く
+    try {
+      if (videoEl.readyState >= 2) drawMediaFit(ctx, videoEl, canvas.width, canvas.height);
+    } catch (e) {
+      // デコードが追いついていない等でまだ描画できない場合は、そのフレームは諦めて次を待つ
+    }
   }
 
-  if (!stillPlayingSameVideo) {
-    // このクリップの再生に入った最初のフレーム: 開始位置へシークして再生を始める
-    state.previewVideoEl = videoEl;
-    state.previewVideoClipId = activeClip.clipId;
-    videoEl.currentTime = Math.max(0, offsetIntoClip);
-    videoEl.play().catch(() => {}); // 自動再生ポリシー等で失敗しても致命的ではないため無視する
-  }
-
-  // 2フレーム目以降は改めてシークせず、動画が自然に進めている現在のフレームをそのまま描く
-  try {
-    if (videoEl.readyState >= 2) drawMediaFit(ctx, videoEl, canvas.width, canvas.height);
-  } catch (e) {
-    // デコードが追いついていない等でまだ描画できない場合は、そのフレームは諦めて次を待つ
-  }
+  // 画像・動画の同期描画パス、および何も表示すべきものが無い(黒背景の)場合はここでテキストを重ねる
+  drawTextOverlays(ctx, activeTexts, canvas.width, canvas.height);
 }
 
 // ---------- アップロード ----------
@@ -390,7 +504,8 @@ function renderAll() {
 
     const trackDeleteBtn = document.createElement("button");
     trackDeleteBtn.className = "track-delete-btn";
-    trackDeleteBtn.title = "このファイルをサーバーから削除";
+    const isTextTrack = track.clips[0]?.kind === "text";
+    trackDeleteBtn.title = isTextTrack ? "このトラックを削除" : "このファイルをサーバーから削除";
     trackDeleteBtn.textContent = "🗑";
     trackDeleteBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -431,12 +546,15 @@ function renderAll() {
   updatePreview(state.playheadSec);
 }
 
-const CLIP_KIND_ICON = { image: "🖼 ", video: "🎬 " };
+const CLIP_KIND_ICON = { image: "🖼 ", video: "🎬 ", text: "📝 " };
 
 function buildClipEl(clip) {
   const dur = clip.trimEnd - clip.trimStart;
   const div = document.createElement("div");
-  const kindClass = clip.kind === "image" ? " clip-image" : clip.kind === "video" ? " clip-video" : "";
+  const kindClass =
+    clip.kind === "image" ? " clip-image" :
+    clip.kind === "video" ? " clip-video" :
+    clip.kind === "text" ? " clip-text" : "";
   div.className = "clip" + kindClass + (state.selectedClipId === clip.clipId ? " selected" : "");
   div.style.left = `${clip.timelineStart * PX_PER_SEC}px`;
   div.style.width = `${Math.max(dur * PX_PER_SEC, 10)}px`;
@@ -444,7 +562,8 @@ function buildClipEl(clip) {
 
   const labelDiv = document.createElement("div");
   labelDiv.className = "clip-label";
-  labelDiv.textContent = (CLIP_KIND_ICON[clip.kind] || "") + clip.filename;
+  const labelText = clip.kind === "text" ? (clip.text || "").split("\n")[0] : clip.filename;
+  labelDiv.textContent = (CLIP_KIND_ICON[clip.kind] || "") + labelText;
   div.appendChild(labelDiv);
 
   const leftHandle = document.createElement("div");
@@ -902,6 +1021,10 @@ el.exportBtn.addEventListener("click", async () => {
         trimStart: clip.trimStart,
         trimEnd: clip.trimEnd,
         timelineStart: clip.timelineStart,
+        // テキストクリップはfileId/extを持たない代わりに以下を送る
+        text: clip.text,
+        fontKey: clip.fontKey,
+        position: clip.position,
       });
     }
   }
@@ -1002,25 +1125,34 @@ function showContextMenuAt(clientX, clientY) {
   el.clipContextMenu.style.top = `${Math.max(8, Math.min(clientY, maxY))}px`;
 }
 
-// 既存の画像クリップを右クリックした場合のメニュー(動画生成/画像編集)
-function openClipContextMenuForClip(clipId, clientX, clientY) {
+// 既存のクリップを右クリックした場合のメニュー。
+// 画像クリップ: 動画生成/画像編集、テキストクリップ: テキスト編集、を表示する。
+function openClipContextMenuForClip(clip, clientX, clientY) {
   closeAiPanel();
-  el.clipContextMenu.dataset.targetClipId = clipId;
-  el.ctxGenVideoBtn.classList.remove("hidden");
-  el.ctxGenImageBtn.classList.remove("hidden");
+  closeTextPanel();
+  el.clipContextMenu.dataset.targetClipId = clip.clipId;
+  const isImage = clip.kind === "image";
+  const isText = clip.kind === "text";
+  el.ctxGenVideoBtn.classList.toggle("hidden", !isImage);
+  el.ctxGenImageBtn.classList.toggle("hidden", !isImage);
   el.ctxGenNewImageBtn.classList.add("hidden");
+  el.ctxAddTextBtn.classList.add("hidden");
+  el.ctxEditTextBtn.classList.toggle("hidden", !isText);
   showContextMenuAt(clientX, clientY);
 }
 
 // クリップが無い位置(トラックの空いている部分、またはトラックが1つも無い状態)を
-// 右クリックした場合のメニュー(新規画像生成)。trackIdがnullなら新しいトラックを作る。
+// 右クリックした場合のメニュー(新規画像生成/テキスト追加)。trackIdがnullなら新しいトラックを作る。
 function openClipContextMenuForNewImage(trackId, timelineStart, clientX, clientY) {
   closeAiPanel();
+  closeTextPanel();
   el.clipContextMenu.dataset.targetTrackId = trackId || "";
   el.clipContextMenu.dataset.targetTimelineStart = String(timelineStart);
   el.ctxGenVideoBtn.classList.add("hidden");
   el.ctxGenImageBtn.classList.add("hidden");
   el.ctxGenNewImageBtn.classList.remove("hidden");
+  el.ctxAddTextBtn.classList.remove("hidden");
+  el.ctxEditTextBtn.classList.add("hidden");
   showContextMenuAt(clientX, clientY);
 }
 
@@ -1133,6 +1265,24 @@ el.ctxGenNewImageBtn.addEventListener("click", (e) => {
   const rect = el.clipContextMenu.getBoundingClientRect();
   closeClipContextMenu();
   openAiPanel("new", { trackId, timelineStart }, rect.left, rect.top);
+});
+
+el.ctxAddTextBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const trackId = el.clipContextMenu.dataset.targetTrackId || null;
+  const timelineStart = parseFloat(el.clipContextMenu.dataset.targetTimelineStart || "0");
+  const rect = el.clipContextMenu.getBoundingClientRect();
+  closeClipContextMenu();
+  openTextPanel("add", { trackId, timelineStart }, rect.left, rect.top);
+});
+
+el.ctxEditTextBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const found = findClip(el.clipContextMenu.dataset.targetClipId);
+  const rect = el.clipContextMenu.getBoundingClientRect();
+  closeClipContextMenu();
+  if (!found) return;
+  openTextPanel("edit", { clip: found.clip }, rect.left, rect.top);
 });
 
 el.aiPanelCloseBtn.addEventListener("click", closeAiPanel);
@@ -1283,27 +1433,161 @@ function addNewImageClipAt(data, trackId, timelineStart) {
   preloadClipMedia(clip);
 }
 
+// ---------- テキストクリップの追加/編集パネル ----------
+
+let textPanelMode = null; // "add" | "edit"
+let textPanelTargetClipId = null;      // "edit"モード用
+let textPanelTargetTrackId = null;     // "add"モード用(nullなら新規トラックを作る)
+let textPanelTargetTimelineStart = 0;  // "add"モード用
+let textPanelSelectedPosition = "bottom-center";
+
+function updateTextPanelPreview() {
+  const info = FONT_REGISTRY[el.textPanelFont.value] || FONT_REGISTRY[DEFAULT_FONT_KEY];
+  el.textPanelPreview.style.fontFamily = `"${info.cssFamily}"`;
+  el.textPanelPreview.textContent = el.textPanelContent.value || "プレビュー";
+}
+
+function setTextPanelPosition(position) {
+  textPanelSelectedPosition = position;
+  el.textPanelPositionGrid.querySelectorAll(".position-btn").forEach((btn) => {
+    btn.classList.toggle("selected", btn.dataset.pos === position);
+  });
+}
+
+function closeTextPanel() {
+  el.textEditPanel.classList.add("hidden");
+  textPanelMode = null;
+  textPanelTargetClipId = null;
+  textPanelTargetTrackId = null;
+  textPanelTargetTimelineStart = 0;
+}
+
+function openTextPanel(mode, ctx, anchorX, anchorY) {
+  textPanelMode = mode;
+  el.textPanelStatus.textContent = "";
+  el.textPanelStatus.classList.remove("error");
+
+  if (mode === "edit") {
+    const clip = ctx.clip;
+    textPanelTargetClipId = clip.clipId;
+    el.textPanelTitle.textContent = "✏️ テキストを編集";
+    el.textPanelSubmitBtn.textContent = "更新する";
+    el.textPanelContent.value = clip.text || "";
+    el.textPanelFont.value = clip.fontKey || DEFAULT_FONT_KEY;
+    setTextPanelPosition(clip.position || "bottom-center");
+  } else {
+    textPanelTargetTrackId = ctx.trackId;
+    textPanelTargetTimelineStart = ctx.timelineStart;
+    el.textPanelTitle.textContent = "📝 テキストを追加";
+    el.textPanelSubmitBtn.textContent = "追加する";
+    el.textPanelContent.value = "";
+    el.textPanelFont.value = DEFAULT_FONT_KEY;
+    setTextPanelPosition("bottom-center");
+  }
+  updateTextPanelPreview();
+
+  el.textEditPanel.classList.remove("hidden");
+  const panelRect = el.textEditPanel.getBoundingClientRect();
+  const maxX = window.innerWidth - panelRect.width - 8;
+  const maxY = window.innerHeight - panelRect.height - 8;
+  el.textEditPanel.style.left = `${Math.max(8, Math.min(anchorX, maxX))}px`;
+  el.textEditPanel.style.top = `${Math.max(8, Math.min(anchorY, maxY))}px`;
+  el.textPanelContent.focus();
+}
+
+el.textPanelContent.addEventListener("input", updateTextPanelPreview);
+el.textPanelFont.addEventListener("change", updateTextPanelPreview);
+el.textPanelCloseBtn.addEventListener("click", closeTextPanel);
+
+el.textPanelPositionGrid.querySelectorAll(".position-btn").forEach((btn) => {
+  btn.addEventListener("click", () => setTextPanelPosition(btn.dataset.pos));
+});
+
+// 新しいテキストクリップを、指定したトラックの指定位置に追加する。
+// trackIdがnull、または該当トラックが見つからない場合は新しいトラックを作る。
+function addTextClipAt(trackId, timelineStart, text, fontKey, position) {
+  const track = trackId ? state.tracks.find((t) => t.trackId === trackId) : null;
+
+  const clip = {
+    clipId: `c${++clipCounter}`,
+    kind: "text",
+    text,
+    fontKey,
+    position,
+    trimStart: 0,
+    trimEnd: DEFAULT_TEXT_DURATION_SEC,
+    srcDuration: MAX_TEXT_DURATION_SEC,
+    timelineStart: Math.max(0, timelineStart || 0),
+    trackId: null,
+  };
+
+  if (track) {
+    clip.trackId = track.trackId;
+    track.clips.push(clip);
+  } else {
+    trackCounter += 1;
+    const newTrackId = `t${trackCounter}`;
+    clip.trackId = newTrackId;
+    state.tracks.push({ trackId: newTrackId, label: text.split("\n")[0], clips: [clip] });
+  }
+
+  state.selectedClipId = clip.clipId;
+}
+
+el.textPanelSubmitBtn.addEventListener("click", () => {
+  const text = el.textPanelContent.value.trim();
+  if (!text) {
+    el.textPanelStatus.textContent = "テキストを入力してください";
+    el.textPanelStatus.classList.add("error");
+    return;
+  }
+  const fontKey = el.textPanelFont.value;
+  const position = textPanelSelectedPosition;
+
+  if (textPanelMode === "edit") {
+    const found = findClip(textPanelTargetClipId);
+    if (!found) {
+      el.textPanelStatus.textContent = "対象のクリップが見つかりません(削除された可能性があります)";
+      el.textPanelStatus.classList.add("error");
+      return;
+    }
+    found.clip.text = text;
+    found.clip.fontKey = fontKey;
+    found.clip.position = position;
+    setStatus("テキストを更新しました");
+  } else {
+    addTextClipAt(textPanelTargetTrackId, textPanelTargetTimelineStart, text, fontKey, position);
+    setStatus("テキストを追加しました");
+  }
+
+  closeTextPanel();
+  renderAll();
+});
+
 // メニュー/パネルの外側をクリックしたら閉じる
 document.addEventListener("click", (e) => {
   if (!el.clipContextMenu.contains(e.target)) closeClipContextMenu();
   if (!el.aiActionPanel.contains(e.target)) closeAiPanel();
+  if (!el.textEditPanel.contains(e.target)) closeTextPanel();
 });
 
 // 右クリックの一括ハンドリング:
-//   - 画像クリップ上            -> 動画生成/画像編集メニュー
+//   - 画像/テキストクリップ上    -> それぞれ専用のメニュー(動画生成/画像編集/テキスト編集)
 //   - トラックラベル上          -> 対象外(通常のブラウザメニューに任せる)
-//   - トラックレーンの空き部分  -> そのトラック・その位置に新規画像生成メニュー
+//   - トラックレーンの空き部分  -> そのトラック・その位置に新規画像生成/テキスト追加メニュー
 //   - タイムライン領域のそれ以外(トラックが1つも無い場合の空欄など)
-//                               -> 新しいトラックの先頭に新規画像生成メニュー
+//                               -> 新しいトラックの先頭に同上のメニュー
 //   - それ以外(ツールバー等)   -> 通常のブラウザメニューに任せ、開いていたUIは閉じる
 document.addEventListener("contextmenu", (e) => {
-  const clipEl = e.target.closest(".clip.clip-image");
+  const clipEl = e.target.closest(".clip.clip-image, .clip.clip-text");
   if (clipEl) {
     e.preventDefault();
     const clipId = clipEl.dataset.clipId;
+    const found = findClip(clipId);
+    if (!found) return;
     state.selectedClipId = clipId;
     renderAll();
-    openClipContextMenuForClip(clipId, e.clientX, e.clientY);
+    openClipContextMenuForClip(found.clip, e.clientX, e.clientY);
     return;
   }
 
@@ -1311,12 +1595,14 @@ document.addEventListener("contextmenu", (e) => {
     // 音声/動画クリップは対象外。通常のブラウザメニューに任せ、開いていたUIは閉じる
     closeClipContextMenu();
     closeAiPanel();
+    closeTextPanel();
     return;
   }
 
   if (e.target.closest(".track-label")) {
     closeClipContextMenu();
     closeAiPanel();
+    closeTextPanel();
     return;
   }
 
@@ -1342,6 +1628,7 @@ document.addEventListener("contextmenu", (e) => {
 
   closeClipContextMenu();
   closeAiPanel();
+  closeTextPanel();
 });
 
 document.addEventListener("keydown", (e) => {
@@ -1349,6 +1636,7 @@ document.addEventListener("keydown", (e) => {
     closeClipContextMenu();
     closeAiPanel();
     closeSettingsPanel();
+    closeTextPanel();
   }
 });
 
