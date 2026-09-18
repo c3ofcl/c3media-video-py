@@ -88,6 +88,7 @@ MAX_TEXT_DURATION_SEC = 600.0
 TEXT_FONT_SIZE = 48
 TEXT_MARGIN_PX = 40
 TEXT_MAX_WIDTH_RATIO = 0.86  # キャンバス幅に対する、テキストボックスの最大幅の割合(はみ出し防止の折り返し用)
+DEFAULT_TEXT_POSITION = (0.5, 0.82)  # プレビュー上でドラッグする前の初期位置(中心点の相対座標)
 
 
 def _font_path(font_key):
@@ -95,27 +96,20 @@ def _font_path(font_key):
     return os.path.join(FONTS_DIR, filename)
 
 
-def _text_anchor_xy(position, clip_w, clip_h, canvas_w, canvas_h):
+def _text_center_xy(pos_x, pos_y, clip_w, clip_h, canvas_w, canvas_h):
     """
-    position: "top-left"などの"<縦位置>-<横位置>"形式の9方位(縦: top/middle/bottom,
-    横: left/center/right)。テキストクリップの左上座標(x, y)を返す。
+    pos_x, pos_y: プレビュー画面をドラッグして決めた、テキストブロック中心点の相対座標(0〜1)。
+    テキストクリップの左上座標(x, y)を返す。
     """
-    vertical, _, horizontal = (position or "bottom-center").partition("-")
+    if pos_x is None:
+        pos_x = DEFAULT_TEXT_POSITION[0]
+    if pos_y is None:
+        pos_y = DEFAULT_TEXT_POSITION[1]
+    pos_x = max(0.0, min(1.0, float(pos_x)))
+    pos_y = max(0.0, min(1.0, float(pos_y)))
 
-    if horizontal == "left":
-        x = TEXT_MARGIN_PX
-    elif horizontal == "right":
-        x = canvas_w - clip_w - TEXT_MARGIN_PX
-    else:
-        x = (canvas_w - clip_w) / 2
-
-    if vertical == "top":
-        y = TEXT_MARGIN_PX
-    elif vertical == "bottom":
-        y = canvas_h - clip_h - TEXT_MARGIN_PX
-    else:
-        y = (canvas_h - clip_h) / 2
-
+    x = pos_x * canvas_w - clip_w / 2
+    y = pos_y * canvas_h - clip_h / 2
     return (x, y)
 
 if not os.environ.get("MAGIC_HOUR_API_KEY", "").strip():
@@ -603,7 +597,7 @@ def _fit_and_place(clip, timeline_start, canvas_w, canvas_h):
 def export_video(clips):
     image_specs = []  # [(timelineStart, duration, path), ...]
     video_specs = []  # [(timelineStart, trimStart, trimEnd, path), ...]
-    text_specs = []  # [(timelineStart, duration, text, fontKey, position), ...]
+    text_specs = []  # [(timelineStart, duration, text, fontKey, posX, posY), ...]
     # ↑いずれも後にある要素ほど、映像合成時に上に重なる(フロントエンドのトラック順)。
     # テキストは常に画像・動画より後に(=一番上に)重ねる。
     total_end_sec = 0.0
@@ -623,7 +617,9 @@ def export_video(clips):
             if not text:
                 continue
             total_end_sec = max(total_end_sec, timeline_start + dur)
-            text_specs.append((timeline_start, dur, text, c.get("fontKey"), c.get("position")))
+            text_specs.append(
+                (timeline_start, dur, text, c.get("fontKey"), c.get("positionX"), c.get("positionY"))
+            )
             continue
 
         path = _resolve_clip_path(c)
@@ -660,7 +656,7 @@ def export_video(clips):
         layers.append(_fit_and_place(sub, timeline_start, canvas_w, canvas_h))
 
     # テキストは画像・動画より後に追加することで、常に一番上に重なるようにする
-    for timeline_start, dur, text, font_key, position in text_specs:
+    for timeline_start, dur, text, font_key, pos_x, pos_y in text_specs:
         font_path = _font_path(font_key)
         max_width_px = canvas_w * TEXT_MAX_WIDTH_RATIO
         wrapped = _wrap_text_to_width(text, font_path, TEXT_FONT_SIZE, max_width_px)
@@ -675,7 +671,7 @@ def export_video(clips):
             text_align="center",
             duration=dur,
         )
-        xy = _text_anchor_xy(position, txt_clip.w, txt_clip.h, canvas_w, canvas_h)
+        xy = _text_center_xy(pos_x, pos_y, txt_clip.w, txt_clip.h, canvas_w, canvas_h)
         layers.append(txt_clip.with_position(xy).with_start(timeline_start))
 
     video = CompositeVideoClip(layers, size=VIDEO_CANVAS_SIZE).with_duration(total_end_sec)
@@ -732,7 +728,8 @@ def export():
           "kind": "text",
           "text": "表示するテキスト",
           "fontKey": "noto-sans-jp",   # FONT_REGISTRYのキー
-          "position": "bottom-center", # 9方位(縦: top/middle/bottom, 横: left/center/right)
+          "positionX": 0.5,             # テキスト中心のx座標(キャンバス幅に対する相対値0〜1)
+          "positionY": 0.82,            # テキスト中心のy座標(キャンバス高さに対する相対値0〜1)
           "trimStart": 0.0,
           "trimEnd": 5.0,               # 画像同様、表示秒数の基準
           "timelineStart": 3.0

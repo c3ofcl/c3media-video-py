@@ -34,6 +34,9 @@ const state = {
   _playStartSec: 0,    // 再生開始時点のタイムライン上の秒数
   previewVideoEl: null,     // 現在「再生中」として実際にplay()させているプレビュー用<video>要素
   previewVideoClipId: null, // ↑がどのクリップのものかを覚えておくためのclipId
+  textBoundingBoxes: {},    // clipId -> {x,y,width,height} 直近の描画結果(プレビューのドラッグ判定に使う)
+  draggingTextClipId: null, // プレビュー上でドラッグ中のテキストクリップid
+  dragOffset: { x: 0, y: 0 }, // ドラッグ開始時の「クリック位置 - テキスト中心」のオフセット(px)
 };
 
 let clipCounter = 0;
@@ -84,7 +87,6 @@ const el = {
   textPanelContent: document.getElementById("textPanelContent"),
   textPanelFont: document.getElementById("textPanelFont"),
   textPanelPreview: document.getElementById("textPanelPreview"),
-  textPanelPositionGrid: document.getElementById("textPanelPositionGrid"),
   textPanelCloseBtn: document.getElementById("textPanelCloseBtn"),
   textPanelSubmitBtn: document.getElementById("textPanelSubmitBtn"),
   textPanelStatus: document.getElementById("textPanelStatus"),
@@ -254,6 +256,8 @@ function textClipFontCss(fontKey) {
   return `${TEXT_FONT_SIZE}px "${info.cssFamily}"`;
 }
 
+const DEFAULT_TEXT_POSITION = { x: 0.5, y: 0.82 }; // プレビューでドラッグする前の初期位置(中心点の相対座標)
+
 function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
   ctx.font = textClipFontCss(clip.fontKey);
   const lineHeight = TEXT_FONT_SIZE * 1.3;
@@ -262,16 +266,14 @@ function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
   const blockWidth = Math.max(1, ...lines.map((l) => ctx.measureText(l).width));
   const blockHeight = lines.length * lineHeight;
 
-  const [vertical, horizontal] = (clip.position || "bottom-center").split("-");
-  let blockX;
-  if (horizontal === "left") blockX = TEXT_MARGIN_PX;
-  else if (horizontal === "right") blockX = canvasW - blockWidth - TEXT_MARGIN_PX;
-  else blockX = (canvasW - blockWidth) / 2;
+  const pos = clip.position || DEFAULT_TEXT_POSITION;
+  const centerX = (pos.x ?? DEFAULT_TEXT_POSITION.x) * canvasW;
+  const centerY = (pos.y ?? DEFAULT_TEXT_POSITION.y) * canvasH;
+  const blockX = centerX - blockWidth / 2;
+  const blockY = centerY - blockHeight / 2;
 
-  let blockY;
-  if (vertical === "top") blockY = TEXT_MARGIN_PX;
-  else if (vertical === "bottom") blockY = canvasH - blockHeight - TEXT_MARGIN_PX;
-  else blockY = (canvasH - blockHeight) / 2;
+  // ヒットテスト(プレビュー画面でのドラッグ判定)用に、描画のたびに最新の矩形を覚えておく
+  state.textBoundingBoxes[clip.clipId] = { x: blockX, y: blockY, width: blockWidth, height: blockHeight };
 
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
@@ -286,6 +288,16 @@ function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
     ctx.strokeText(line, cx, cy);
     ctx.fillText(line, cx, cy);
   });
+
+  // 選択中のテキストクリップは、ドラッグで動かせることが分かるよう枠を薄く表示する
+  if (clip.clipId === state.selectedClipId) {
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.strokeRect(blockX - 8, blockY - 8, blockWidth + 16, blockHeight + 16);
+    ctx.restore();
+  }
 }
 
 function drawTextOverlays(ctx, textClips, canvasW, canvasH) {
@@ -368,6 +380,80 @@ function updatePreview(sec) {
   // 画像・動画の同期描画パス、および何も表示すべきものが無い(黒背景の)場合はここでテキストを重ねる
   drawTextOverlays(ctx, activeTexts, canvas.width, canvas.height);
 }
+
+// ---------- プレビュー画面でのテキストドラッグ配置 ----------
+// 一般的な動画編集ソフトと同様、テキストクリップをプレビュー画面上で直接ドラッグして
+// 位置(画面上の相対座標)を変更できるようにする。
+
+function canvasCoordsFromEvent(e) {
+  const canvas = el.previewCanvas;
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (canvas.width / rect.width),
+    y: (e.clientY - rect.top) * (canvas.height / rect.height),
+  };
+}
+
+// 指定した座標(canvas内部座標)に重なる、現在再生ヘッド位置で表示されているテキストクリップを探す。
+// 複数重なっている場合は後のトラックのもの(=見た目で一番上にあるもの)を優先する。
+function findTextClipAtPoint(x, y) {
+  let found = null;
+  for (const track of state.tracks) {
+    for (const clip of track.clips) {
+      if (clip.kind !== "text") continue;
+      const start = clip.timelineStart;
+      const end = start + (clip.trimEnd - clip.trimStart);
+      if (state.playheadSec < start || state.playheadSec >= end) continue; // 今表示されていないものは対象外
+      const box = state.textBoundingBoxes[clip.clipId];
+      if (!box) continue;
+      if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) {
+        found = clip; // 後で見つかったものほど上書き = 見た目で一番上のものが残る
+      }
+    }
+  }
+  return found;
+}
+
+el.previewCanvas.addEventListener("mousedown", (e) => {
+  const { x, y } = canvasCoordsFromEvent(e);
+  const clip = findTextClipAtPoint(x, y);
+  if (!clip) return;
+  e.preventDefault();
+
+  state.selectedClipId = clip.clipId;
+  const pos = clip.position || DEFAULT_TEXT_POSITION;
+  const canvas = el.previewCanvas;
+  const dragOffset = {
+    x: x - pos.x * canvas.width,
+    y: y - pos.y * canvas.height,
+  };
+  el.previewCanvas.style.cursor = "grabbing";
+  renderAll(); // タイムライン側の選択状態(枠のハイライト)も同期する
+
+  function onMove(ev) {
+    const p = canvasCoordsFromEvent(ev);
+    const newX = (p.x - dragOffset.x) / canvas.width;
+    const newY = (p.y - dragOffset.y) / canvas.height;
+    clip.position = {
+      x: Math.max(0, Math.min(1, newX)),
+      y: Math.max(0, Math.min(1, newY)),
+    };
+    updatePreview(state.playheadSec);
+  }
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    el.previewCanvas.style.cursor = "default";
+  }
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
+
+// ドラッグ中でない時は、テキストの上にカーソルが来たらつかめることが分かるようにする
+el.previewCanvas.addEventListener("mousemove", (e) => {
+  const { x, y } = canvasCoordsFromEvent(e);
+  el.previewCanvas.style.cursor = findTextClipAtPoint(x, y) ? "grab" : "default";
+});
 
 // ---------- アップロード ----------
 
@@ -1024,7 +1110,8 @@ el.exportBtn.addEventListener("click", async () => {
         // テキストクリップはfileId/extを持たない代わりに以下を送る
         text: clip.text,
         fontKey: clip.fontKey,
-        position: clip.position,
+        positionX: clip.position ? clip.position.x : undefined,
+        positionY: clip.position ? clip.position.y : undefined,
       });
     }
   }
@@ -1439,19 +1526,11 @@ let textPanelMode = null; // "add" | "edit"
 let textPanelTargetClipId = null;      // "edit"モード用
 let textPanelTargetTrackId = null;     // "add"モード用(nullなら新規トラックを作る)
 let textPanelTargetTimelineStart = 0;  // "add"モード用
-let textPanelSelectedPosition = "bottom-center";
 
 function updateTextPanelPreview() {
   const info = FONT_REGISTRY[el.textPanelFont.value] || FONT_REGISTRY[DEFAULT_FONT_KEY];
   el.textPanelPreview.style.fontFamily = `"${info.cssFamily}"`;
   el.textPanelPreview.textContent = el.textPanelContent.value || "プレビュー";
-}
-
-function setTextPanelPosition(position) {
-  textPanelSelectedPosition = position;
-  el.textPanelPositionGrid.querySelectorAll(".position-btn").forEach((btn) => {
-    btn.classList.toggle("selected", btn.dataset.pos === position);
-  });
 }
 
 function closeTextPanel() {
@@ -1474,7 +1553,6 @@ function openTextPanel(mode, ctx, anchorX, anchorY) {
     el.textPanelSubmitBtn.textContent = "更新する";
     el.textPanelContent.value = clip.text || "";
     el.textPanelFont.value = clip.fontKey || DEFAULT_FONT_KEY;
-    setTextPanelPosition(clip.position || "bottom-center");
   } else {
     textPanelTargetTrackId = ctx.trackId;
     textPanelTargetTimelineStart = ctx.timelineStart;
@@ -1482,7 +1560,6 @@ function openTextPanel(mode, ctx, anchorX, anchorY) {
     el.textPanelSubmitBtn.textContent = "追加する";
     el.textPanelContent.value = "";
     el.textPanelFont.value = DEFAULT_FONT_KEY;
-    setTextPanelPosition("bottom-center");
   }
   updateTextPanelPreview();
 
@@ -1499,13 +1576,10 @@ el.textPanelContent.addEventListener("input", updateTextPanelPreview);
 el.textPanelFont.addEventListener("change", updateTextPanelPreview);
 el.textPanelCloseBtn.addEventListener("click", closeTextPanel);
 
-el.textPanelPositionGrid.querySelectorAll(".position-btn").forEach((btn) => {
-  btn.addEventListener("click", () => setTextPanelPosition(btn.dataset.pos));
-});
-
-// 新しいテキストクリップを、指定したトラックの指定位置に追加する。
+// 新しいテキストクリップを、指定したトラックの指定位置(タイムライン上)に追加する。
+// 画面上の表示位置は既定値(下寄り中央)からスタートし、プレビュー画面でのドラッグで調整する。
 // trackIdがnull、または該当トラックが見つからない場合は新しいトラックを作る。
-function addTextClipAt(trackId, timelineStart, text, fontKey, position) {
+function addTextClipAt(trackId, timelineStart, text, fontKey) {
   const track = trackId ? state.tracks.find((t) => t.trackId === trackId) : null;
 
   const clip = {
@@ -1513,7 +1587,7 @@ function addTextClipAt(trackId, timelineStart, text, fontKey, position) {
     kind: "text",
     text,
     fontKey,
-    position,
+    position: { ...DEFAULT_TEXT_POSITION },
     trimStart: 0,
     trimEnd: DEFAULT_TEXT_DURATION_SEC,
     srcDuration: MAX_TEXT_DURATION_SEC,
@@ -1542,7 +1616,6 @@ el.textPanelSubmitBtn.addEventListener("click", () => {
     return;
   }
   const fontKey = el.textPanelFont.value;
-  const position = textPanelSelectedPosition;
 
   if (textPanelMode === "edit") {
     const found = findClip(textPanelTargetClipId);
@@ -1551,12 +1624,12 @@ el.textPanelSubmitBtn.addEventListener("click", () => {
       el.textPanelStatus.classList.add("error");
       return;
     }
+    // 表示位置(position)はプレビュー画面でのドラッグで管理するため、ここでは変更しない
     found.clip.text = text;
     found.clip.fontKey = fontKey;
-    found.clip.position = position;
     setStatus("テキストを更新しました");
   } else {
-    addTextClipAt(textPanelTargetTrackId, textPanelTargetTimelineStart, text, fontKey, position);
+    addTextClipAt(textPanelTargetTrackId, textPanelTargetTimelineStart, text, fontKey);
     setStatus("テキストを追加しました");
   }
 
