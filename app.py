@@ -85,7 +85,9 @@ FONT_REGISTRY = {
 DEFAULT_FONT_KEY = "noto-sans-jp"
 DEFAULT_TEXT_DURATION_SEC = 5.0
 MAX_TEXT_DURATION_SEC = 600.0
-TEXT_FONT_SIZE = 48
+DEFAULT_TEXT_FONT_SIZE = 48  # フォントサイズ未指定時(旧データ・手動リクエスト等)のフォールバック
+MIN_TEXT_FONT_SIZE = 12
+MAX_TEXT_FONT_SIZE = 240
 TEXT_MARGIN_PX = 40
 TEXT_MAX_WIDTH_RATIO = 0.86  # キャンバス幅に対する、テキストボックスの最大幅の割合(はみ出し防止の折り返し用)
 DEFAULT_TEXT_POSITION = (0.5, 0.82)  # プレビュー上でドラッグする前の初期位置(中心点の相対座標)
@@ -617,8 +619,13 @@ def export_video(clips):
             if not text:
                 continue
             total_end_sec = max(total_end_sec, timeline_start + dur)
+            try:
+                font_size = float(c.get("fontSize") or DEFAULT_TEXT_FONT_SIZE)
+            except (TypeError, ValueError):
+                font_size = DEFAULT_TEXT_FONT_SIZE
+            font_size = max(MIN_TEXT_FONT_SIZE, min(MAX_TEXT_FONT_SIZE, font_size))
             text_specs.append(
-                (timeline_start, dur, text, c.get("fontKey"), c.get("positionX"), c.get("positionY"))
+                (timeline_start, dur, text, c.get("fontKey"), c.get("positionX"), c.get("positionY"), font_size)
             )
             continue
 
@@ -656,17 +663,17 @@ def export_video(clips):
         layers.append(_fit_and_place(sub, timeline_start, canvas_w, canvas_h))
 
     # テキストは画像・動画より後に追加することで、常に一番上に重なるようにする
-    for timeline_start, dur, text, font_key, pos_x, pos_y in text_specs:
+    for timeline_start, dur, text, font_key, pos_x, pos_y, font_size in text_specs:
         font_path = _font_path(font_key)
         max_width_px = canvas_w * TEXT_MAX_WIDTH_RATIO
-        wrapped = _wrap_text_to_width(text, font_path, TEXT_FONT_SIZE, max_width_px)
+        wrapped = _wrap_text_to_width(text, font_path, font_size, max_width_px)
         txt_clip = TextClip(
             font=font_path,
             text=wrapped,
-            font_size=TEXT_FONT_SIZE,
+            font_size=font_size,
             color="white",
             stroke_color="black",
-            stroke_width=max(1, TEXT_FONT_SIZE // 16),
+            stroke_width=max(1, round(font_size / 16)),
             method="label",  # 自前で折り返し済みなので、実際の内容にぴったり収まるlabelを使う
             text_align="center",
             duration=dur,
@@ -728,6 +735,7 @@ def export():
           "kind": "text",
           "text": "表示するテキスト",
           "fontKey": "noto-sans-jp",   # FONT_REGISTRYのキー
+          "fontSize": 48,                # フォントサイズ(px相当)。プレビューの四隅ドラッグで変更する
           "positionX": 0.5,             # テキスト中心のx座標(キャンバス幅に対する相対値0〜1)
           "positionY": 0.82,            # テキスト中心のy座標(キャンバス高さに対する相対値0〜1)
           "trimStart": 0.0,

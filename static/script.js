@@ -16,7 +16,9 @@ const FONT_REGISTRY = {
 const DEFAULT_FONT_KEY = "noto-sans-jp";
 const DEFAULT_TEXT_DURATION_SEC = 5.0; // 画像クリップと同じ既定の表示秒数
 const MAX_TEXT_DURATION_SEC = 600.0; // 画像クリップと同じ、右ハンドルで伸ばせる上限
-const TEXT_FONT_SIZE = 48; // サーバー側(app.pyのTEXT_FONT_SIZE)と揃えること
+const DEFAULT_TEXT_FONT_SIZE = 48; // サーバー側(app.pyのDEFAULT_TEXT_FONT_SIZE)と揃えること
+const MIN_TEXT_FONT_SIZE = 12; // サーバー側(app.pyのMIN_TEXT_FONT_SIZE)と揃えること
+const MAX_TEXT_FONT_SIZE = 240; // サーバー側(app.pyのMAX_TEXT_FONT_SIZE)と揃えること
 const TEXT_MARGIN_PX = 40; // サーバー側(app.pyのTEXT_MARGIN_PX)と揃えること
 const TEXT_MAX_WIDTH_RATIO = 0.86; // サーバー側(app.pyのTEXT_MAX_WIDTH_RATIO)と揃えること
 
@@ -35,6 +37,7 @@ const state = {
   previewVideoEl: null,     // 現在「再生中」として実際にplay()させているプレビュー用<video>要素
   previewVideoClipId: null, // ↑がどのクリップのものかを覚えておくためのclipId
   textBoundingBoxes: {},    // clipId -> {x,y,width,height} 直近の描画結果(プレビューのドラッグ判定に使う)
+  textResizeHandles: {},    // clipId -> {corner名 -> {x,y}} 選択中クリップの四隅ハンドル座標(リサイズ判定に使う)
   draggingTextClipId: null, // プレビュー上でドラッグ中のテキストクリップid
   dragOffset: { x: 0, y: 0 }, // ドラッグ開始時の「クリック位置 - テキスト中心」のオフセット(px)
 };
@@ -251,16 +254,18 @@ function wrapTextToWidth(ctx, text, maxWidthPx) {
   return outLines;
 }
 
-function textClipFontCss(fontKey) {
+function textClipFontCss(fontKey, fontSize) {
   const info = FONT_REGISTRY[fontKey] || FONT_REGISTRY[DEFAULT_FONT_KEY];
-  return `${TEXT_FONT_SIZE}px "${info.cssFamily}"`;
+  return `${fontSize}px "${info.cssFamily}"`;
 }
 
 const DEFAULT_TEXT_POSITION = { x: 0.5, y: 0.82 }; // プレビューでドラッグする前の初期位置(中心点の相対座標)
+const TEXT_RESIZE_HANDLE_SIZE = 14; // 四隅のリサイズハンドルの大きさ(canvas内部座標のpx)
 
 function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
-  ctx.font = textClipFontCss(clip.fontKey);
-  const lineHeight = TEXT_FONT_SIZE * 1.3;
+  const fontSize = clip.fontSize || DEFAULT_TEXT_FONT_SIZE;
+  ctx.font = textClipFontCss(clip.fontKey, fontSize);
+  const lineHeight = fontSize * 1.3;
   const maxWidthPx = canvasW * TEXT_MAX_WIDTH_RATIO;
   const lines = wrapTextToWidth(ctx, clip.text || "", maxWidthPx);
   const blockWidth = Math.max(1, ...lines.map((l) => ctx.measureText(l).width));
@@ -278,25 +283,54 @@ function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   ctx.lineJoin = "round";
-  ctx.lineWidth = Math.max(2, Math.round(TEXT_FONT_SIZE / 8));
+  ctx.lineWidth = Math.max(2, Math.round(fontSize / 8));
   ctx.strokeStyle = "black";
   ctx.fillStyle = "white";
 
   lines.forEach((line, i) => {
     const cx = blockX + blockWidth / 2;
-    const cy = blockY + i * lineHeight + TEXT_FONT_SIZE * 0.85;
+    const cy = blockY + i * lineHeight + fontSize * 0.85;
     ctx.strokeText(line, cx, cy);
     ctx.fillText(line, cx, cy);
   });
 
-  // 選択中のテキストクリップは、ドラッグで動かせることが分かるよう枠を薄く表示する
+  // 選択中のテキストクリップは、ドラッグで動かせる/四隅でリサイズできることが分かるよう
+  // 枠と四隅のハンドルを表示する。ハンドルの位置はここで記録し、リサイズのヒットテストに使う。
   if (clip.clipId === state.selectedClipId) {
+    const pad = 8;
+    const left = blockX - pad;
+    const top = blockY - pad;
+    const right = blockX + blockWidth + pad;
+    const bottom = blockY + blockHeight + pad;
+
     ctx.save();
     ctx.setLineDash([6, 4]);
     ctx.lineWidth = 2;
     ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.strokeRect(blockX - 8, blockY - 8, blockWidth + 16, blockHeight + 16);
+    ctx.strokeRect(left, top, right - left, bottom - top);
     ctx.restore();
+
+    const corners = {
+      "top-left": { x: left, y: top },
+      "top-right": { x: right, y: top },
+      "bottom-left": { x: left, y: bottom },
+      "bottom-right": { x: right, y: bottom },
+    };
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#fff";
+    ctx.strokeStyle = "#5b8cff";
+    ctx.lineWidth = 2;
+    const half = TEXT_RESIZE_HANDLE_SIZE / 2;
+    for (const key of Object.keys(corners)) {
+      const c = corners[key];
+      ctx.fillRect(c.x - half, c.y - half, TEXT_RESIZE_HANDLE_SIZE, TEXT_RESIZE_HANDLE_SIZE);
+      ctx.strokeRect(c.x - half, c.y - half, TEXT_RESIZE_HANDLE_SIZE, TEXT_RESIZE_HANDLE_SIZE);
+    }
+    ctx.restore();
+    state.textResizeHandles[clip.clipId] = corners;
+  } else {
+    delete state.textResizeHandles[clip.clipId];
   }
 }
 
@@ -414,12 +448,22 @@ function findTextClipAtPoint(x, y) {
   return found;
 }
 
-el.previewCanvas.addEventListener("mousedown", (e) => {
-  const { x, y } = canvasCoordsFromEvent(e);
-  const clip = findTextClipAtPoint(x, y);
-  if (!clip) return;
-  e.preventDefault();
+// 指定した座標(canvas内部座標)が、選択中クリップの四隅リサイズハンドルに重なっているか調べる
+function findResizeHandleAtPoint(x, y) {
+  if (!state.selectedClipId) return null;
+  const handles = state.textResizeHandles[state.selectedClipId];
+  if (!handles) return null;
+  const half = TEXT_RESIZE_HANDLE_SIZE / 2 + 4; // 少し広めに当たり判定を取り、つかみやすくする
+  for (const corner of Object.keys(handles)) {
+    const h = handles[corner];
+    if (x >= h.x - half && x <= h.x + half && y >= h.y - half && y <= h.y + half) {
+      return corner;
+    }
+  }
+  return null;
+}
 
+function startTextMove(clip, x, y) {
   state.selectedClipId = clip.clipId;
   const pos = clip.position || DEFAULT_TEXT_POSITION;
   const canvas = el.previewCanvas;
@@ -447,11 +491,99 @@ el.previewCanvas.addEventListener("mousedown", (e) => {
   }
   document.addEventListener("mousemove", onMove);
   document.addEventListener("mouseup", onUp);
+}
+
+// 四隅のハンドルをドラッグして文字サイズを変える。ドラッグした角の対角(固定角)からの距離の
+// 比率をそのまま拡大率とし、固定角が画面上で動かないように中心位置(position)を再計算する。
+function startTextResize(clip, corner) {
+  const canvas = el.previewCanvas;
+  const handles = state.textResizeHandles[clip.clipId];
+  if (!handles) return;
+
+  const pad = 8;
+  const oppositeOf = {
+    "top-left": "bottom-right",
+    "top-right": "bottom-left",
+    "bottom-left": "top-right",
+    "bottom-right": "top-left",
+  };
+  const dragged = handles[corner];
+  const fixed = handles[oppositeOf[corner]];
+  const startDist = Math.hypot(dragged.x - fixed.x, dragged.y - fixed.y) || 1;
+  const startFontSize = clip.fontSize || DEFAULT_TEXT_FONT_SIZE;
+  const isLeft = corner.endsWith("left");
+  const isTop = corner.startsWith("top");
+
+  el.previewCanvas.style.cursor = isLeft === isTop ? "nwse-resize" : "nesw-resize";
+
+  function onMove(ev) {
+    const p = canvasCoordsFromEvent(ev);
+    const currentDist = Math.hypot(p.x - fixed.x, p.y - fixed.y);
+    const scale = Math.max(0.1, currentDist / startDist);
+    clip.fontSize = Math.max(MIN_TEXT_FONT_SIZE, Math.min(MAX_TEXT_FONT_SIZE, startFontSize * scale));
+
+    // 新しいフォントサイズでの寸法を測り直し、固定角の画面上の位置が変わらないよう中心を再計算する
+    const ctx = canvas.getContext("2d");
+    ctx.font = textClipFontCss(clip.fontKey, clip.fontSize);
+    const lineHeight = clip.fontSize * 1.3;
+    const maxWidthPx = canvas.width * TEXT_MAX_WIDTH_RATIO;
+    const lines = wrapTextToWidth(ctx, clip.text || "", maxWidthPx);
+    const newWidth = Math.max(1, ...lines.map((l) => ctx.measureText(l).width));
+    const newHeight = lines.length * lineHeight;
+
+    const newCenterX = isLeft ? fixed.x - pad - newWidth / 2 : fixed.x + pad + newWidth / 2;
+    const newCenterY = isTop ? fixed.y - pad - newHeight / 2 : fixed.y + pad + newHeight / 2;
+    clip.position = {
+      x: Math.max(0, Math.min(1, newCenterX / canvas.width)),
+      y: Math.max(0, Math.min(1, newCenterY / canvas.height)),
+    };
+    updatePreview(state.playheadSec);
+  }
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    el.previewCanvas.style.cursor = "default";
+  }
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+el.previewCanvas.addEventListener("mousedown", (e) => {
+  const { x, y } = canvasCoordsFromEvent(e);
+
+  const handleCorner = findResizeHandleAtPoint(x, y);
+  if (handleCorner) {
+    e.preventDefault();
+    const found = findClip(state.selectedClipId);
+    if (found) startTextResize(found.clip, handleCorner);
+    return;
+  }
+
+  const clip = findTextClipAtPoint(x, y);
+  if (!clip) return;
+  e.preventDefault();
+  startTextMove(clip, x, y);
 });
 
-// ドラッグ中でない時は、テキストの上にカーソルが来たらつかめることが分かるようにする
+// ダブルクリックで、選択中のテキストクリップの内容を直接編集するパネルを開く
+el.previewCanvas.addEventListener("dblclick", (e) => {
+  const { x, y } = canvasCoordsFromEvent(e);
+  const clip = findTextClipAtPoint(x, y);
+  if (!clip) return;
+  e.preventDefault();
+  openTextPanel("edit", { clip }, e.clientX, e.clientY);
+});
+
+// ドラッグ中でない時は、ハンドル/テキストの上にカーソルが来たら操作できることを示す
 el.previewCanvas.addEventListener("mousemove", (e) => {
   const { x, y } = canvasCoordsFromEvent(e);
+  const handleCorner = findResizeHandleAtPoint(x, y);
+  if (handleCorner) {
+    const isLeft = handleCorner.endsWith("left");
+    const isTop = handleCorner.startsWith("top");
+    el.previewCanvas.style.cursor = isLeft === isTop ? "nwse-resize" : "nesw-resize";
+    return;
+  }
   el.previewCanvas.style.cursor = findTextClipAtPoint(x, y) ? "grab" : "default";
 });
 
@@ -665,6 +797,16 @@ function buildClipEl(clip) {
     state.selectedClipId = clip.clipId;
     renderAll();
   });
+
+  // テキストクリップはタイムライン上でダブルクリックしても直接編集パネルを開ける
+  // (プレビュー画面でダブルクリックする場合と同じ動作)
+  if (clip.kind === "text") {
+    div.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      const rect = div.getBoundingClientRect();
+      openTextPanel("edit", { clip }, rect.left, rect.bottom + 4);
+    });
+  }
 
   attachDrag(div, clip);
   attachResize(leftHandle, clip, "left");
@@ -1110,6 +1252,7 @@ el.exportBtn.addEventListener("click", async () => {
         // テキストクリップはfileId/extを持たない代わりに以下を送る
         text: clip.text,
         fontKey: clip.fontKey,
+        fontSize: clip.fontSize,
         positionX: clip.position ? clip.position.x : undefined,
         positionY: clip.position ? clip.position.y : undefined,
       });
@@ -1587,6 +1730,7 @@ function addTextClipAt(trackId, timelineStart, text, fontKey) {
     kind: "text",
     text,
     fontKey,
+    fontSize: DEFAULT_TEXT_FONT_SIZE,
     position: { ...DEFAULT_TEXT_POSITION },
     trimStart: 0,
     trimEnd: DEFAULT_TEXT_DURATION_SEC,
