@@ -618,7 +618,7 @@ function addTrackFromAssetResponse(data, labelOverride) {
     timelineStart: 0,
     trackId,
   };
-  state.tracks.push({ trackId, label: labelOverride || data.filename, clips: [clip] });
+  state.tracks.push({ trackId, trackType: "media", label: labelOverride || data.filename, clips: [clip] });
   preloadClipMedia(clip);
   return clip;
 }
@@ -697,6 +697,88 @@ function renderRuler() {
   }
 }
 
+// トラック1行分の(ラベル+レーン)DOMを組み立てる。メディア/オーバーレイ共通で使う。
+function buildTrackRow(track, total) {
+  const row = document.createElement("div");
+  row.className = "track-row";
+
+  const label = document.createElement("div");
+  label.className = "track-label";
+
+  // オーバーレイトラックは、内容の編集やクリップの移動で古くならないよう、
+  // 表示のたびに先頭クリップのテキスト(1行目)からラベルを作る
+  const labelStr =
+    track.trackType === "overlay" && track.clips[0]
+      ? `📝 ${(track.clips[0].text || "").split("\n")[0]}`
+      : track.label;
+  const labelText = document.createElement("span");
+  labelText.className = "track-label-text";
+  labelText.textContent = labelStr;
+  labelText.title = labelStr;
+  label.appendChild(labelText);
+
+  const trackDeleteBtn = document.createElement("button");
+  trackDeleteBtn.className = "track-delete-btn";
+  const isTextTrack = track.trackType === "overlay";
+  trackDeleteBtn.title = isTextTrack ? "このトラックを削除" : "このファイルをサーバーから削除";
+  trackDeleteBtn.textContent = "🗑";
+  trackDeleteBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    deleteTrackFile(track);
+  });
+  label.appendChild(trackDeleteBtn);
+
+  row.appendChild(label);
+
+  const lane = document.createElement("div");
+  lane.className = "track-lane";
+  lane.style.width = `${total * PX_PER_SEC}px`;
+  lane.dataset.trackId = track.trackId;
+  lane.dataset.trackType = track.trackType || "media";
+  lane.addEventListener("click", (e) => {
+    if (e.target === lane) seekFromClientX(e.clientX, lane);
+  });
+
+  for (const clip of track.clips) {
+    lane.appendChild(buildClipEl(clip));
+  }
+
+  row.appendChild(lane);
+  return row;
+}
+
+// オーバーレイ区画の見出し行。常に表示し、ここの「+」から新しいオーバーレイ(テキスト)
+// トラックを追加できるようにする(オーバーレイが1つも無くても位置が変わらない)。
+function buildOverlayHeaderRow(total) {
+  const row = document.createElement("div");
+  row.className = "track-row overlay-header-row";
+
+  const label = document.createElement("div");
+  label.className = "track-label overlay-header-label";
+  const addBtn = document.createElement("button");
+  addBtn.className = "btn overlay-add-btn";
+  addBtn.textContent = "+ オーバーレイ";
+  addBtn.title = "新しいオーバーレイ(テキスト)トラックを追加";
+  addBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const rect = addBtn.getBoundingClientRect();
+    openTextPanel("add", { trackId: null, timelineStart: state.playheadSec }, rect.right + 4, rect.top);
+  });
+  label.appendChild(addBtn);
+  row.appendChild(label);
+
+  const lane = document.createElement("div");
+  lane.className = "track-lane overlay-header-lane";
+  lane.style.width = `${total * PX_PER_SEC}px`;
+  const laneLabel = document.createElement("span");
+  laneLabel.className = "overlay-header-lane-text";
+  laneLabel.textContent = "オーバーレイ(テキスト) — クリップを上下にドラッグして別のオーバーレイへ移動できます";
+  lane.appendChild(laneLabel);
+  row.appendChild(lane);
+
+  return row;
+}
+
 function renderAll() {
   el.emptyHint.style.display = state.tracks.length === 0 ? "block" : "none";
   renderRuler();
@@ -706,47 +788,16 @@ function renderAll() {
   el.tracksContainer.querySelectorAll(".track-row, .playhead").forEach((n) => n.remove());
 
   const total = timelineTotalDuration();
+  const mediaTracks = state.tracks.filter((t) => t.trackType !== "overlay");
+  const overlayTracks = state.tracks.filter((t) => t.trackType === "overlay");
 
-  for (const track of state.tracks) {
-    const row = document.createElement("div");
-    row.className = "track-row";
+  for (const track of mediaTracks) {
+    el.tracksContainer.appendChild(buildTrackRow(track, total));
+  }
 
-    const label = document.createElement("div");
-    label.className = "track-label";
-
-    const labelText = document.createElement("span");
-    labelText.className = "track-label-text";
-    labelText.textContent = track.label;
-    labelText.title = track.label;
-    label.appendChild(labelText);
-
-    const trackDeleteBtn = document.createElement("button");
-    trackDeleteBtn.className = "track-delete-btn";
-    const isTextTrack = track.clips[0]?.kind === "text";
-    trackDeleteBtn.title = isTextTrack ? "このトラックを削除" : "このファイルをサーバーから削除";
-    trackDeleteBtn.textContent = "🗑";
-    trackDeleteBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      deleteTrackFile(track);
-    });
-    label.appendChild(trackDeleteBtn);
-
-    row.appendChild(label);
-
-    const lane = document.createElement("div");
-    lane.className = "track-lane";
-    lane.style.width = `${total * PX_PER_SEC}px`;
-    lane.dataset.trackId = track.trackId;
-    lane.addEventListener("click", (e) => {
-      if (e.target === lane) seekFromClientX(e.clientX, lane);
-    });
-
-    for (const clip of track.clips) {
-      lane.appendChild(buildClipEl(clip));
-    }
-
-    row.appendChild(lane);
-    el.tracksContainer.appendChild(row);
+  el.tracksContainer.appendChild(buildOverlayHeaderRow(total));
+  for (const track of overlayTracks) {
+    el.tracksContainer.appendChild(buildTrackRow(track, total));
   }
 
   const playhead = document.createElement("div");
@@ -861,6 +912,33 @@ function bestSnapDelta(target, edgeCandidates) {
 
 // ---------- ドラッグ移動 ----------
 
+// オーバーレイ(テキスト)トラックのレーンの画面上の位置を集める。クリップを上下にドラッグして
+// 別のオーバーレイへ移す時の、ドロップ先判定に使う(ドラッグ開始時に1回だけ取得する)。
+function collectOverlayLaneRects() {
+  const rects = [];
+  document.querySelectorAll('.track-lane[data-track-type="overlay"]').forEach((laneEl) => {
+    const r = laneEl.getBoundingClientRect();
+    rects.push({ trackId: laneEl.dataset.trackId, top: r.top, bottom: r.bottom, el: laneEl });
+  });
+  return rects;
+}
+
+// クリップを別のオーバーレイトラックへ移す(タイムライン上の開始位置はそのまま)。
+// 移動元のトラックが空になった場合は、他のクリップ削除時と同様にトラックごと取り除く。
+function moveClipToTrack(clip, newTrackId) {
+  const oldTrack = state.tracks.find((t) => t.trackId === clip.trackId);
+  const newTrack = state.tracks.find((t) => t.trackId === newTrackId);
+  if (!oldTrack || !newTrack || oldTrack === newTrack) return;
+  if (oldTrack.trackType !== "overlay" || newTrack.trackType !== "overlay") return;
+
+  oldTrack.clips = oldTrack.clips.filter((c) => c.clipId !== clip.clipId);
+  clip.trackId = newTrack.trackId;
+  newTrack.clips.push(clip);
+  if (oldTrack.clips.length === 0) {
+    state.tracks = state.tracks.filter((t) => t.trackId !== oldTrack.trackId);
+  }
+}
+
 function attachDrag(clipEl, clip) {
   clipEl.addEventListener("mousedown", (e) => {
     if (e.target.classList.contains("handle")) return;
@@ -871,6 +949,13 @@ function attachDrag(clipEl, clip) {
     const startTimelineStart = clip.timelineStart;
     const dur = clip.trimEnd - clip.trimStart;
     const snapCandidates = collectSnapCandidates(clip.clipId);
+
+    // オーバーレイのクリップだけ、上下にドラッグして別のオーバーレイトラックへ移動できる。
+    // ドラッグ中はドロップ先の行を強調表示するだけにして、実際の付け替えは指を離した時に行う。
+    const owner = findClip(clip.clipId);
+    const isOverlayClip = !!owner && owner.track.trackType === "overlay";
+    const overlayLanes = isOverlayClip ? collectOverlayLaneRects() : [];
+    let targetTrackId = clip.trackId;
 
     function onMove(ev) {
       const dx = ev.clientX - startX;
@@ -888,10 +973,22 @@ function attachDrag(clipEl, clip) {
 
       clip.timelineStart = Math.max(0, newStart);
       clipEl.style.left = `${clip.timelineStart * PX_PER_SEC}px`;
+
+      if (isOverlayClip) {
+        const hit = overlayLanes.find((l) => ev.clientY >= l.top && ev.clientY <= l.bottom);
+        targetTrackId = hit ? hit.trackId : clip.trackId;
+        for (const l of overlayLanes) {
+          l.el.classList.toggle("drop-target", l.trackId === targetTrackId && l.trackId !== clip.trackId);
+        }
+      }
     }
     function onUp() {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      for (const l of overlayLanes) l.el.classList.remove("drop-target");
+      if (isOverlayClip && targetTrackId !== clip.trackId) {
+        moveClipToTrack(clip, targetTrackId);
+      }
       renderAll();
     }
     document.addEventListener("mousemove", onMove);
@@ -1373,15 +1470,18 @@ function openClipContextMenuForClip(clip, clientX, clientY) {
 
 // クリップが無い位置(トラックの空いている部分、またはトラックが1つも無い状態)を
 // 右クリックした場合のメニュー(新規画像生成/テキスト追加)。trackIdがnullなら新しいトラックを作る。
-function openClipContextMenuForNewImage(trackId, timelineStart, clientX, clientY) {
+// areaType: "overlay"(オーバーレイ側) | "media"(メディア側) | null(どちらか未定=両方出す)。
+// オーバーレイのトラックにはテキストだけ、メディアのトラックには画像生成だけを出して、
+// 2つの区画に別種のクリップが混ざらないようにする。
+function openClipContextMenuForNewImage(trackId, timelineStart, clientX, clientY, areaType = null) {
   closeAiPanel();
   closeTextPanel();
   el.clipContextMenu.dataset.targetTrackId = trackId || "";
   el.clipContextMenu.dataset.targetTimelineStart = String(timelineStart);
   el.ctxGenVideoBtn.classList.add("hidden");
   el.ctxGenImageBtn.classList.add("hidden");
-  el.ctxGenNewImageBtn.classList.remove("hidden");
-  el.ctxAddTextBtn.classList.remove("hidden");
+  el.ctxGenNewImageBtn.classList.toggle("hidden", areaType === "overlay");
+  el.ctxAddTextBtn.classList.toggle("hidden", areaType === "media");
   el.ctxEditTextBtn.classList.add("hidden");
   showContextMenuAt(clientX, clientY);
 }
@@ -1633,7 +1733,8 @@ function replaceClipWithAsset(oldClip, data) {
 // 新規生成した画像を、指定したトラックの指定位置にクリップとして追加する。
 // trackIdがnull、または該当トラックが見つからない場合は新しいトラックを作る。
 function addNewImageClipAt(data, trackId, timelineStart) {
-  const track = trackId ? state.tracks.find((t) => t.trackId === trackId) : null;
+  let track = trackId ? state.tracks.find((t) => t.trackId === trackId) : null;
+  if (track && track.trackType === "overlay") track = null; // オーバーレイには入れず、新しいメディアトラックを作る
 
   const clip = {
     clipId: `c${++clipCounter}`,
@@ -1656,7 +1757,7 @@ function addNewImageClipAt(data, trackId, timelineStart) {
     trackCounter += 1;
     const newTrackId = `t${trackCounter}`;
     clip.trackId = newTrackId;
-    state.tracks.push({ trackId: newTrackId, label: data.filename, clips: [clip] });
+    state.tracks.push({ trackId: newTrackId, trackType: "media", label: data.filename, clips: [clip] });
   }
 
   state.selectedClipId = clip.clipId;
@@ -1723,7 +1824,8 @@ el.textPanelCloseBtn.addEventListener("click", closeTextPanel);
 // 画面上の表示位置は既定値(下寄り中央)からスタートし、プレビュー画面でのドラッグで調整する。
 // trackIdがnull、または該当トラックが見つからない場合は新しいトラックを作る。
 function addTextClipAt(trackId, timelineStart, text, fontKey) {
-  const track = trackId ? state.tracks.find((t) => t.trackId === trackId) : null;
+  let track = trackId ? state.tracks.find((t) => t.trackId === trackId) : null;
+  if (track && track.trackType !== "overlay") track = null; // メディアのトラックには入れず、新しいオーバーレイを作る
 
   const clip = {
     clipId: `c${++clipCounter}`,
@@ -1746,7 +1848,7 @@ function addTextClipAt(trackId, timelineStart, text, fontKey) {
     trackCounter += 1;
     const newTrackId = `t${trackCounter}`;
     clip.trackId = newTrackId;
-    state.tracks.push({ trackId: newTrackId, label: text.split("\n")[0], clips: [clip] });
+    state.tracks.push({ trackId: newTrackId, trackType: "overlay", label: text.split("\n")[0], clips: [clip] });
   }
 
   state.selectedClipId = clip.clipId;
@@ -1831,7 +1933,10 @@ document.addEventListener("contextmenu", (e) => {
     let sec = Math.max(0, (e.clientX - rect.left) / PX_PER_SEC);
     const snapDelta = bestSnapDelta(sec, collectSnapCandidates());
     if (snapDelta !== null) sec = Math.max(0, sec + snapDelta);
-    openClipContextMenuForNewImage(trackId, sec, e.clientX, e.clientY);
+    const areaType = laneEl.classList.contains("overlay-header-lane")
+      ? "overlay"
+      : laneEl.dataset.trackType || null;
+    openClipContextMenuForNewImage(trackId, sec, e.clientX, e.clientY, areaType);
     return;
   }
 
