@@ -550,32 +550,50 @@ body {
   word-break: break-word;
 }
 
-/* ---------- オーバーレイ(テキスト)区画の見出し行 ---------- */
-.overlay-header-row {
+/* ---------- 一番下の「+ オーバーレイ」行 ---------- */
+.add-overlay-row {
   border-top: 2px solid var(--border);
 }
-.overlay-header-label {
+.add-overlay-label {
   justify-content: flex-start;
   background: var(--panel-2);
   padding: 4px 6px;
 }
-.overlay-add-btn {
+.add-overlay-btn {
   padding: 4px 8px;
   font-size: 12px;
   white-space: nowrap;
 }
-.overlay-header-lane {
+.add-overlay-lane {
   height: 34px;
   display: flex;
   align-items: center;
   background: var(--panel-2);
 }
-.overlay-header-lane-text {
-  position: sticky;
-  left: 8px;
-  padding-left: 8px;
+.add-overlay-lane-text {
+  padding-left: 12px;
   font-size: 11px;
   color: var(--text-dim);
   white-space: nowrap;
   pointer-events: none;
+}
+
+/* 空の行に薄く出すヒント */
+.empty-lane-hint {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 行をまたいでドラッグ中のクリップ: 手前に浮かせて、指に追従して見えるようにする */
+.clip.dragging {
+  z-index: 30;
+  opacity: 0.92;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.55);
+  cursor: grabbing;
 }
