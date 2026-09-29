@@ -77,8 +77,8 @@ VIDEO_FPS = 30
 # script.js内のFONT_REGISTRYと対応しているので、増減する場合は両方を変更すること。
 FONTS_DIR = os.path.join(BASE_DIR, "static", "fonts")
 FONT_REGISTRY = {
-    "noto-sans-jp": "NotoSansJP-Variable.ttf",
-    "noto-serif-jp": "NotoSerifJP-Variable.ttf",
+    "noto-sans-jp": "NotoSansJP-Regular.ttf",
+    "noto-serif-jp": "NotoSerifJP-Regular.ttf",
     "dela-gothic-one": "DelaGothicOne-Regular.ttf",
     "zen-maru-gothic": "ZenMaruGothic-Bold.ttf",
 }
@@ -120,6 +120,20 @@ if not os.environ.get("MAGIC_HOUR_API_KEY", "").strip():
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+# debug=Trueのままだと、想定外の例外はFlask/Werkzeugの対話的デバッガ(HTMLページ)に渡ってしまい、
+# フロントエンドが期待するJSONの代わりにHTMLが返って「Unexpected token '<' ... is not valid JSON」
+# という分かりにくいエラーになる。下のerrorhandlerで必ずJSONを返すようにするため、ここで無効化する。
+app.config["PROPAGATE_EXCEPTIONS"] = False
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(e):
+    """
+    どのAPIエンドポイントで起きた想定外の例外も、HTMLではなくJSONで返す。
+    フルスタックトレースはサーバーのコンソールに出しておくので、原因調査はそちらで行う。
+    """
+    app.logger.exception(e)
+    return jsonify({"error": f"サーバー内部エラーが発生しました: {e}"}), 500
 
 
 def allowed_file(filename: str) -> bool:
