@@ -204,16 +204,6 @@ body {
   min-width: 950px;
 }
 
-.empty-hint {
-  color: var(--text-dim);
-  font-size: 13px;
-  padding: 40px 20px;
-  line-height: 1.8;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  margin-top: 12px;
-}
-
 .track-row {
   display: flex;
   align-items: stretch;

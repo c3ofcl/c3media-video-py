@@ -50,7 +50,6 @@ const el = {
   fileInput: document.getElementById("fileInput"),
   tracksContainer: document.getElementById("tracksContainer"),
   ruler: document.getElementById("ruler"),
-  emptyHint: document.getElementById("emptyHint"),
   status: document.getElementById("status"),
   playBtn: document.getElementById("playBtn"),
   stopBtn: document.getElementById("stopBtn"),
@@ -836,7 +835,6 @@ function buildAddOverlayRow(total) {
 }
 
 function renderAll() {
-  el.emptyHint.style.display = state.tracks.length === 0 ? "block" : "none";
   renderRuler();
   updateTimeDisplay();
 
@@ -1226,7 +1224,9 @@ el.clearUploadsBtn.addEventListener("click", async () => {
       return;
     }
     stopPlayback();
-    state.tracks = [];
+    // 初期表示と同じく、空のオーバーレイ1つだけの状態に戻す
+    overlayCounter = 0;
+    state.tracks = [newOverlayTrack()];
     state.selectedClipId = null;
     state.bufferCache = {};
     state.imageCache = {};
@@ -2096,5 +2096,6 @@ el.settingsClearBtn.addEventListener("click", () => {
   submitSettingsKey("");
 });
 
-// 初期描画
+// 初期描画: 最初から空のオーバーレイを1つ用意しておく
+state.tracks.push(newOverlayTrack());
 renderAll();
