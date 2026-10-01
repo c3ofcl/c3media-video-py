@@ -1602,15 +1602,12 @@ function openAiPanel(mode, ctx, anchorX, anchorY) {
     const dur = Math.max(1, Math.round(ctx.clip.trimEnd - ctx.clip.trimStart));
     el.aiPanelTitle.textContent = "🎬 この画像から動画を生成";
     el.aiPanelHint.textContent =
-      `長さ: ${dur}秒(このクリップのタイムライン上の長さに合わせます)。動画の縦横比はMagic Hourの` +
-      `Image-to-Video APIでは個別指定できず、元になる画像の縦横比がそのまま使われます。` +
-      `特定の縦横比にしたい場合は、先に画像側(✨の2メニュー)で縦横比を指定して作った画像を` +
-      `元に生成してください。生成後、この画像は動画クリップに置き換わります。`;
-    el.aiPanelPrompt.placeholder = "動きの指示(任意) 例: ゆっくりカメラが左からパンする";
+      `長さ: ${dur}秒(このクリップのタイムライン上の長さに合わせます)。`;
+    el.aiPanelPrompt.placeholder = "動きの指示(任意) 例: 家で寝転がる黒猫";
     el.aiPanelAspectRow.classList.add("hidden");
   } else if (mode === "image") {
     aiPanelTargetClipId = ctx.clip.clipId;
-    el.aiPanelTitle.textContent = "✨ この画像を編集して新規生成";
+    el.aiPanelTitle.textContent = "✨ この画像を基に新規生成";
     el.aiPanelHint.textContent = "この画像を元にAIで編集し、新しいトラックとして追加します。";
     el.aiPanelPrompt.placeholder = "編集内容を入力(例: 背景を夕焼けの空に変更して)";
     populateAspectRatioSelect("image");

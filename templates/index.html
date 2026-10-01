@@ -3,12 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>マルチトラック動画エディタ</title>
+<title>C3動画編集</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
+  <!--ソフト上部-->
   <header class="topbar">
-    <h1>🎬 マルチトラック動画エディタ</h1>
+    <h1>🎬 C3動画編集</h1>
     <div class="time-counter" id="timeCounter">
       <span id="currentTimeLabel" class="current">0:00</span> / <span id="totalTimeLabel">0:00</span>
     </div>
@@ -21,15 +22,15 @@
       <button id="stopBtn" class="btn">■ 停止</button>
       <button id="cutBtn" class="btn" title="選択中のクリップを再生位置でカット">✂ カット</button>
       <button id="deleteBtn" class="btn" title="選択中のクリップを削除">🗑 削除</button>
-      <button id="clearUploadsBtn" class="btn" title="サーバーに保存されているファイルを全て削除します">🧹 素材を全削除</button>
+      <button id="clearUploadsBtn" class="btn" title="サーバーに保存されているファイルを全て削除します。注：編集中のデータが消えます">🧹 編集状態をリセット</button>
       <span class="spacer"></span>
       <select id="formatSelect" class="select">
         <option value="mp4">MP4（動画）</option>
         <option value="wav">WAV（音声のみ）</option>
         <option value="mp3">MP3（音声のみ）</option>
       </select>
-      <button id="exportBtn" class="btn primary">⬇ 書き出し(結合)</button>
-      <button id="settingsBtn" class="btn" title="Magic Hour APIキーなどの設定">⚙ 設定</button>
+      <button id="exportBtn" class="btn primary">⬇ エクスポート</button>
+      <button id="settingsBtn" class="btn" title="Magic Hour APIキーなどの設定はこちらから">⚙ 設定</button>
     </div>
   </header>
 
@@ -55,7 +56,7 @@
   <!-- 画像/テキストクリップ、および空いている部分を右クリックした時に出るメニュー -->
   <div id="clipContextMenu" class="context-menu hidden">
     <button id="ctxGenVideoBtn" class="context-menu-item">🎬 この画像から動画を生成</button>
-    <button id="ctxGenImageBtn" class="context-menu-item">✨ この画像を編集して新規生成</button>
+    <button id="ctxGenImageBtn" class="context-menu-item">✨ この画像を基に新規生成</button>
     <button id="ctxGenNewImageBtn" class="context-menu-item">✨ 新しい画像を生成</button>
     <button id="ctxAddTextBtn" class="context-menu-item">📝 テキストを追加</button>
     <button id="ctxEditTextBtn" class="context-menu-item">✏️ テキストを編集</button>
@@ -69,7 +70,7 @@
     </div>
     <p id="aiPanelHint" class="ai-panel-hint"></p>
     <textarea id="aiPanelPrompt" class="ai-panel-textarea" rows="3"
-      placeholder="プロンプトを入力(例: 夕焼けの空にゆっくりカメラが左からパンする)"></textarea>
+      placeholder="プロンプトを入力(例:家で寝転がる黒猫)"></textarea>
     <div id="aiPanelAspectRow" class="ai-panel-row hidden">
       <label class="settings-label" for="aiPanelAspectRatio">縦横比</label>
       <select id="aiPanelAspectRatio" class="select"></select>
