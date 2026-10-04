@@ -4,6 +4,9 @@ const PX_PER_SEC = 60; // style.css の --px-per-sec と揃える
 const LABEL_WIDTH = 150;
 const GRID_SNAP_SEC = 1; // グリッドスナップの間隔(秒)。track-laneの背景の縦線(1秒間隔)と揃えている
 const SNAP_PX_THRESHOLD = 8; // スナップが効く距離(px)。PX_PER_SECで秒に換算して使う
+// クリップを上下に動かして別の行へ移す時の感度。横移動中の多少の手ブレで行が変わらないようにする。
+const ROW_CHANGE_START_PX = 24; // 縦にこれ以上動かすまでは、行の移動を始めない(横移動に専念する)
+const ROW_CHANGE_INSET_PX = 16; // 別の行へ切り替えるには、その行の上下端からこれ以上内側まで入る必要がある
 
 // テキストクリップ用フォント。キーはapp.py側のFONT_REGISTRYと対応させること。
 // cssFamilyはstyle.css内の@font-faceで定義したfont-family名。
@@ -1002,6 +1005,7 @@ function attachDrag(clipEl, clip) {
     const lanes = collectLaneRects();
     const canChangeRow = lanes.length > 1;
     let targetTrackId = clip.trackId;
+    let rowChangeActive = false; // 縦にROW_CHANGE_START_PX以上動かしたら、そのドラッグ中はずっと有効
 
     function onMove(ev) {
       const dx = ev.clientX - startX;
@@ -1022,11 +1026,21 @@ function attachDrag(clipEl, clip) {
 
       if (canChangeRow) {
         const dy = ev.clientY - startY;
-        clipEl.style.transform = `translateY(${dy}px)`;
-        clipEl.classList.toggle("dragging", Math.abs(dy) > 4);
+        if (!rowChangeActive && Math.abs(dy) >= ROW_CHANGE_START_PX) rowChangeActive = true;
+        if (!rowChangeActive) return; // まだ横移動のみ(クリップは今の行から動かさない)
 
-        const hit = lanes.find((l) => ev.clientY >= l.top && ev.clientY <= l.bottom);
-        targetTrackId = hit ? hit.trackId : clip.trackId;
+        clipEl.style.transform = `translateY(${dy}px)`;
+        clipEl.classList.add("dragging");
+
+        // 今の行は端まで、別の行は端からROW_CHANGE_INSET_PX内側まで入った時だけ対象にする。
+        // 行の境目付近では直前の対象を保ち、どの行の上にも無い(タイムラインの外)時は元の行に戻す。
+        const overAny = lanes.some((l) => ev.clientY >= l.top && ev.clientY <= l.bottom);
+        const hit = lanes.find((l) => {
+          const inset = l.trackId === targetTrackId ? 0 : ROW_CHANGE_INSET_PX;
+          return ev.clientY >= l.top + inset && ev.clientY <= l.bottom - inset;
+        });
+        if (hit) targetTrackId = hit.trackId;
+        else if (!overAny) targetTrackId = clip.trackId;
         for (const l of lanes) {
           l.el.classList.toggle("drop-target", l.trackId === targetTrackId && l.trackId !== clip.trackId);
         }
@@ -1618,7 +1632,7 @@ function openAiPanel(mode, ctx, anchorX, anchorY) {
     aiPanelTargetTimelineStart = ctx.timelineStart;
     el.aiPanelTitle.textContent = "✨ 新しい画像を生成";
     el.aiPanelHint.textContent = "プロンプトから新しい画像を生成し、この位置にクリップとして追加します。";
-    el.aiPanelPrompt.placeholder = "画像の内容を入力(例: 夕焼けの海辺で笑う猫)";
+    el.aiPanelPrompt.placeholder = "画像の内容を入力(例: 夕焼けの海辺で鳴く猫)";
     populateAspectRatioSelect("new");
     el.aiPanelAspectRow.classList.remove("hidden");
   }
