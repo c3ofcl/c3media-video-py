@@ -65,11 +65,20 @@ MAX_CONTENT_LENGTH = 300 * 1024 * 1024  # 300MB
 DEFAULT_IMAGE_DURATION_SEC = 5.0
 MAX_IMAGE_DURATION_SEC = 600.0
 
-# 動画書き出し時のキャンバスサイズ(16:9)とフレームレート。
-# 各画像はアスペクト比を保ったままこのサイズに収まるよう縮小し(レターボックス)、
-# 余白は黒で埋める。
+# 動画書き出し時のキャンバスサイズとフレームレート。
+# キャンバスサイズはフロントエンドで選んだもの(ALLOWED_CANVAS_SIZESのいずれか)を使い、
+# 指定が無い・不正な場合はVIDEO_CANVAS_SIZEにする。script.jsのCANVAS_PRESETSと揃えること。
+# 各画像・動画はscale=1の時、アスペクト比を保ったままキャンバスに収まる大きさになり
+# (レターボックス)、余白は黒で埋める。
 VIDEO_CANVAS_SIZE = (1280, 720)
+ALLOWED_CANVAS_SIZES = {(1280, 720), (1920, 1080), (1080, 1920), (1080, 1080)}
 VIDEO_FPS = 30
+
+# 画像・動画クリップの大きさ(scale)の範囲と、初期位置(中心点の相対座標)。
+# プレビュー上の四隅ドラッグで変更する。script.jsのMIN/MAX_MEDIA_SCALEと揃えること。
+MIN_MEDIA_SCALE = 0.1
+MAX_MEDIA_SCALE = 4.0
+DEFAULT_MEDIA_POSITION = (0.5, 0.5)
 
 # ---------- テキストクリップ ----------
 # プレビュー(ブラウザのcanvas)と書き出し(下記TextClip)の両方で同じフォントファイルを
@@ -91,6 +100,10 @@ MAX_TEXT_FONT_SIZE = 240
 TEXT_MARGIN_PX = 40
 TEXT_MAX_WIDTH_RATIO = 0.86  # キャンバス幅に対する、テキストボックスの最大幅の割合(はみ出し防止の折り返し用)
 DEFAULT_TEXT_POSITION = (0.5, 0.82)  # プレビュー上でドラッグする前の初期位置(中心点の相対座標)
+# フォントサイズは「短辺がこの長さ(px)の画面での大きさ」として扱い、実際のキャンバスサイズに
+# 合わせて拡大縮小する(画面サイズを変えても見た目の比率が変わらないように)。
+# script.jsのTEXT_REFERENCE_SHORT_SIDEと揃えること。
+TEXT_REFERENCE_SHORT_SIDE = 720
 
 
 def _font_path(font_key):
@@ -98,15 +111,19 @@ def _font_path(font_key):
     return os.path.join(FONTS_DIR, filename)
 
 
-def _text_center_xy(pos_x, pos_y, clip_w, clip_h, canvas_w, canvas_h):
+def _text_scale(canvas_w, canvas_h):
+    return min(canvas_w, canvas_h) / TEXT_REFERENCE_SHORT_SIDE
+
+
+def _center_to_topleft(pos_x, pos_y, clip_w, clip_h, canvas_w, canvas_h, default_pos):
     """
-    pos_x, pos_y: プレビュー画面をドラッグして決めた、テキストブロック中心点の相対座標(0〜1)。
-    テキストクリップの左上座標(x, y)を返す。
+    pos_x, pos_y: プレビュー画面をドラッグして決めた、クリップ(テキストブロック・画像・動画)
+    中心点の相対座標(0〜1)。未指定の場合はdefault_posを使う。クリップの左上座標(x, y)を返す。
     """
     if pos_x is None:
-        pos_x = DEFAULT_TEXT_POSITION[0]
+        pos_x = default_pos[0]
     if pos_y is None:
-        pos_y = DEFAULT_TEXT_POSITION[1]
+        pos_y = default_pos[1]
     pos_x = max(0.0, min(1.0, float(pos_x)))
     pos_y = max(0.0, min(1.0, float(pos_y)))
 
@@ -602,19 +619,32 @@ def _wrap_text_to_width(text, font_path, font_size, max_width_px):
     return "\n".join(out_lines)
 
 
-def _fit_and_place(clip, timeline_start, canvas_w, canvas_h):
-    """クリップをアスペクト比を保ったままキャンバスに収まるよう縮小し、中央配置する(レターボックス)"""
+def _parse_media_scale(value):
+    try:
+        scale = float(value) if value is not None else 1.0
+    except (TypeError, ValueError):
+        scale = 1.0
+    return max(MIN_MEDIA_SCALE, min(MAX_MEDIA_SCALE, scale))
+
+
+def _fit_and_place(clip, timeline_start, canvas_w, canvas_h, pos_x=None, pos_y=None, scale=1.0):
+    """
+    クリップを配置する。scale=1の時はアスペクト比を保ったままキャンバスに収まる大きさ(レターボックス)で、
+    scaleはその何倍にするか。pos_x, pos_yはクリップ中心点の相対座標(未指定なら画面中央)。
+    キャンバスからはみ出した部分は合成時に切り取られる。フロントエンドのmediaRect()と同じ計算。
+    """
     iw, ih = clip.size
-    scale = min(canvas_w / iw, canvas_h / ih)
-    new_size = (max(1, round(iw * scale)), max(1, round(ih * scale)))
-    return clip.resized(new_size).with_position("center").with_start(timeline_start)
+    fit = min(canvas_w / iw, canvas_h / ih) * scale
+    new_w, new_h = max(1, round(iw * fit)), max(1, round(ih * fit))
+    xy = _center_to_topleft(pos_x, pos_y, new_w, new_h, canvas_w, canvas_h, DEFAULT_MEDIA_POSITION)
+    return clip.resized((new_w, new_h)).with_position(xy).with_start(timeline_start)
 
 
-def export_video(clips):
-    image_specs = []  # [(timelineStart, duration, path), ...]
-    video_specs = []  # [(timelineStart, trimStart, trimEnd, path), ...]
-    text_specs = []  # [(timelineStart, duration, text, fontKey, posX, posY), ...]
-    # ↑いずれも後にある要素ほど、映像合成時に上に重なる(フロントエンドのトラック順)。
+def export_video(clips, canvas_size=VIDEO_CANVAS_SIZE):
+    # [(kind, timelineStart, trimStart, trimEnd, path, posX, posY, scale), ...]
+    # 画像・動画は同じリストに入れ、フロントエンドのトラック順(後にある要素ほど上に重なる)を保つ。
+    visual_specs = []
+    text_specs = []  # [(timelineStart, duration, text, fontKey, posX, posY, fontSize), ...]
     # テキストは常に画像・動画より後に(=一番上に)重ねる。
     total_end_sec = 0.0
 
@@ -649,36 +679,46 @@ def export_video(clips):
 
         total_end_sec = max(total_end_sec, timeline_start + dur)
 
-        if kind == "image":
-            image_specs.append((timeline_start, dur, path))
-        elif kind == "video":
-            video_specs.append((timeline_start, trim_start, trim_end, path))
+        if kind in ("image", "video"):
+            visual_specs.append(
+                (
+                    kind,
+                    timeline_start,
+                    trim_start,
+                    trim_end,
+                    path,
+                    c.get("positionX"),
+                    c.get("positionY"),
+                    _parse_media_scale(c.get("scale")),
+                )
+            )
 
     audio_loaded = build_audio_segments(clips)  # audio kind + 動画埋め込み音声の両方を含む
 
     if total_end_sec <= 0:
         return jsonify({"error": "有効なクリップがありません"}), 400
 
-    canvas_w, canvas_h = VIDEO_CANVAS_SIZE
+    canvas_w, canvas_h = canvas_size
 
     # 一番下に黒背景を敷き、画像・動画クリップをタイムライン上の位置に配置して重ねる。
-    layers = [ColorClip(size=VIDEO_CANVAS_SIZE, color=(0, 0, 0), duration=total_end_sec)]
+    layers = [ColorClip(size=canvas_size, color=(0, 0, 0), duration=total_end_sec)]
     open_video_clips = []  # 書き出し後にcloseするために保持しておく
 
-    for timeline_start, dur, path in image_specs:
-        img_clip = ImageClip(path, duration=dur)
-        layers.append(_fit_and_place(img_clip, timeline_start, canvas_w, canvas_h))
-
-    for timeline_start, trim_start, trim_end, path in video_specs:
-        raw = VideoFileClip(path)
-        open_video_clips.append(raw)
-        end = min(trim_end, raw.duration)
-        sub = raw.subclipped(trim_start, end).without_audio()  # 音声は別途build_audio_segmentsで合流済み
-        layers.append(_fit_and_place(sub, timeline_start, canvas_w, canvas_h))
+    for kind, timeline_start, trim_start, trim_end, path, pos_x, pos_y, scale in visual_specs:
+        if kind == "image":
+            src = ImageClip(path, duration=trim_end - trim_start)
+        else:
+            raw = VideoFileClip(path)
+            open_video_clips.append(raw)
+            end = min(trim_end, raw.duration)
+            src = raw.subclipped(trim_start, end).without_audio()  # 音声は別途build_audio_segmentsで合流済み
+        layers.append(_fit_and_place(src, timeline_start, canvas_w, canvas_h, pos_x, pos_y, scale))
 
     # テキストは画像・動画より後に追加することで、常に一番上に重なるようにする
+    text_scale = _text_scale(canvas_w, canvas_h)
     for timeline_start, dur, text, font_key, pos_x, pos_y, font_size in text_specs:
         font_path = _font_path(font_key)
+        font_size = max(1, round(font_size * text_scale))  # 画面サイズに合わせた実際のピクセル数
         max_width_px = canvas_w * TEXT_MAX_WIDTH_RATIO
         wrapped = _wrap_text_to_width(text, font_path, font_size, max_width_px)
         txt_clip = TextClip(
@@ -692,10 +732,10 @@ def export_video(clips):
             text_align="center",
             duration=dur,
         )
-        xy = _text_center_xy(pos_x, pos_y, txt_clip.w, txt_clip.h, canvas_w, canvas_h)
+        xy = _center_to_topleft(pos_x, pos_y, txt_clip.w, txt_clip.h, canvas_w, canvas_h, DEFAULT_TEXT_POSITION)
         layers.append(txt_clip.with_position(xy).with_start(timeline_start))
 
-    video = CompositeVideoClip(layers, size=VIDEO_CANVAS_SIZE).with_duration(total_end_sec)
+    video = CompositeVideoClip(layers, size=canvas_size).with_duration(total_end_sec)
 
     tmp_audio_path = None
     if audio_loaded:
@@ -735,6 +775,8 @@ def export():
     リクエストJSON形式:
     {
       "format": "wav" | "mp3" | "mp4",
+      "canvasWidth": 1280,       # 動画の画面サイズ(ALLOWED_CANVAS_SIZESのいずれか。mp4のみ使用)
+      "canvasHeight": 720,
       "clips": [
         {
           "fileId": "...",
@@ -742,14 +784,18 @@ def export():
           "kind": "audio" | "image" | "video",
           "trimStart": 0.0,      # 元ファイル内での開始秒
           "trimEnd": 5.2,        # 元ファイル内での終了秒(画像の場合は表示秒数の基準)
-          "timelineStart": 3.0   # タイムライン上での開始秒
+          "timelineStart": 3.0,  # タイムライン上での開始秒
+          # 画像・動画のみ(省略時は画面中央・画面いっぱいに収まる大きさ)
+          "positionX": 0.5,      # クリップ中心のx座標(キャンバス幅に対する相対値0〜1)
+          "positionY": 0.5,      # クリップ中心のy座標(キャンバス高さに対する相対値0〜1)
+          "scale": 1.0           # 1 = 画面いっぱいに収まる大きさ。プレビューの四隅ドラッグで変更する
         },
         {
           # テキストクリップはfileId/extを持たない代わりに以下を持つ
           "kind": "text",
           "text": "表示するテキスト",
           "fontKey": "noto-sans-jp",   # FONT_REGISTRYのキー
-          "fontSize": 48,                # フォントサイズ(px相当)。プレビューの四隅ドラッグで変更する
+          "fontSize": 48,                # 短辺720pxの画面でのフォントサイズ(px相当)。プレビューの四隅ドラッグで変更する
           "positionX": 0.5,             # テキスト中心のx座標(キャンバス幅に対する相対値0〜1)
           "positionY": 0.82,            # テキスト中心のy座標(キャンバス高さに対する相対値0〜1)
           "trimStart": 0.0,
@@ -770,7 +816,13 @@ def export():
         return jsonify({"error": "クリップがありません"}), 400
 
     if fmt == "mp4":
-        return export_video(clips)
+        try:
+            canvas_size = (int(data.get("canvasWidth")), int(data.get("canvasHeight")))
+        except (TypeError, ValueError):
+            canvas_size = VIDEO_CANVAS_SIZE
+        if canvas_size not in ALLOWED_CANVAS_SIZES:
+            canvas_size = VIDEO_CANVAS_SIZE
+        return export_video(clips, canvas_size)
     return export_audio(clips, fmt)
 
 

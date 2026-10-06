@@ -24,6 +24,23 @@ const MIN_TEXT_FONT_SIZE = 12; // サーバー側(app.pyのMIN_TEXT_FONT_SIZE)�
 const MAX_TEXT_FONT_SIZE = 240; // サーバー側(app.pyのMAX_TEXT_FONT_SIZE)と揃えること
 const TEXT_MARGIN_PX = 40; // サーバー側(app.pyのTEXT_MARGIN_PX)と揃えること
 const TEXT_MAX_WIDTH_RATIO = 0.86; // サーバー側(app.pyのTEXT_MAX_WIDTH_RATIO)と揃えること
+// テキストのfontSizeは、短辺がこの長さ(px)の画面での大きさとして扱い、実際の画面サイズに合わせて
+// 拡大縮小する。サーバー側(app.pyのTEXT_REFERENCE_SHORT_SIDE)と揃えること
+const TEXT_REFERENCE_SHORT_SIDE = 720;
+// 画像・動画クリップのscale(1 = 画面いっぱいに収まる大きさ)の範囲。サーバー側(app.pyのMIN/MAX_MEDIA_SCALE)と揃えること
+const MIN_MEDIA_SCALE = 0.1;
+const MAX_MEDIA_SCALE = 4;
+
+// 出力画面サイズ(プレビューcanvasの解像度 = 書き出す動画の解像度)の候補。
+// サーバー側(app.pyのALLOWED_CANVAS_SIZES)と揃えること
+const CANVAS_PRESETS = {
+  "1280x720": { w: 1280, h: 720, label: "横長 16:9 (1280×720)" },
+  "1920x1080": { w: 1920, h: 1080, label: "横長 16:9 (1920×1080)" },
+  "1080x1920": { w: 1080, h: 1920, label: "縦長 9:16 (1080×1920)" },
+  "1080x1080": { w: 1080, h: 1080, label: "正方形 1:1 (1080×1080)" },
+};
+const DEFAULT_CANVAS_PRESET = "1280x720";
+const PREVIEW_MAX_HEIGHT_PX = 360; // プレビュー枠の表示上の最大の高さ(16:9の時に幅640pxになる)
 
 const state = {
   tracks: [],       // [{trackId, label, clips: [clip, ...]}]
@@ -32,17 +49,15 @@ const state = {
   isPlaying: false,
   bufferCache: {},     // fileId -> Promise<AudioBuffer> (デコード済み音声データ、クリップ間で共有)
   imageCache: {},      // fileId -> Promise<HTMLImageElement> (デコード済み画像、クリップ間で共有)
+  loadedImages: {},    // fileId -> HTMLImageElement (読み込み完了済みのもの。プレビューの同期描画に使う)
   videoCache: {},      // fileId -> HTMLVideoElement (プレビュー描画用。動画クリップ間で共有)
   activeSources: [],   // 再生中のAudioBufferSourceNode一覧
   rafId: null,
   playStartCtxTime: 0, // 再生開始時のAudioContext.currentTime
   _playStartSec: 0,    // 再生開始時点のタイムライン上の秒数
-  previewVideoEl: null,     // 現在「再生中」として実際にplay()させているプレビュー用<video>要素
-  previewVideoClipId: null, // ↑がどのクリップのものかを覚えておくためのclipId
-  textBoundingBoxes: {},    // clipId -> {x,y,width,height} 直近の描画結果(プレビューのドラッグ判定に使う)
-  textResizeHandles: {},    // clipId -> {corner名 -> {x,y}} 選択中クリップの四隅ハンドル座標(リサイズ判定に使う)
-  draggingTextClipId: null, // プレビュー上でドラッグ中のテキストクリップid
-  dragOffset: { x: 0, y: 0 }, // ドラッグ開始時の「クリック位置 - テキスト中心」のオフセット(px)
+  playingVideos: {},   // clipId -> HTMLVideoElement 再生中に実際にplay()させているプレビュー用<video>要素
+  previewBoxes: {},    // clipId -> {x,y,width,height,pad} 直近の描画結果(プレビューのドラッグ判定に使う)
+  previewHandles: null, // {clipId, corners: {corner名 -> {x,y}}} 選択中クリップの四隅ハンドル座標(リサイズ判定に使う)
 };
 
 let clipCounter = 0;
@@ -61,6 +76,8 @@ const el = {
   clearUploadsBtn: document.getElementById("clearUploadsBtn"),
   exportBtn: document.getElementById("exportBtn"),
   formatSelect: document.getElementById("formatSelect"),
+  canvasSizeSelect: document.getElementById("canvasSizeSelect"),
+  previewWrap: document.getElementById("previewWrap"),
   currentTimeLabel: document.getElementById("currentTimeLabel"),
   totalTimeLabel: document.getElementById("totalTimeLabel"),
   previewCanvas: document.getElementById("previewCanvas"),
@@ -148,7 +165,13 @@ function loadImage(fileId, url) {
   if (!state.imageCache[fileId]) {
     state.imageCache[fileId] = new Promise((resolve, reject) => {
       const img = new Image();
-      img.onload = () => resolve(img);
+      img.onload = () => {
+        // プレビューは同期的に描くため、読み込み済みの<img>をここに置いておく。
+        // 読み込み前の描画ではこの画像が抜けているので、停止中なら描き直す。
+        state.loadedImages[fileId] = img;
+        if (!state.isPlaying) updatePreview(state.playheadSec);
+        resolve(img);
+      };
       img.onerror = () => reject(new Error(`画像の読み込みに失敗しました: ${url}`));
       img.src = url;
     });
@@ -156,8 +179,8 @@ function loadImage(fileId, url) {
   return state.imageCache[fileId];
 }
 
-// 動画クリップ用の非表示<video>要素を(無ければ作って)返す。再生はせず、
-// プレビュー描画のためにcurrentTimeをシークしてフレームを取り出す用途のみに使う。
+// 動画クリップ用の非表示<video>要素を(無ければ作って)返す。停止中はcurrentTimeをシークして
+// フレームを取り出し、再生中はplay()させて今映っているフレームをそのまま描く。
 function getOrCreateVideoEl(fileId, url) {
   if (!state.videoCache[fileId]) {
     const v = document.createElement("video");
@@ -165,72 +188,105 @@ function getOrCreateVideoEl(fileId, url) {
     v.muted = true;
     v.preload = "auto";
     v.playsInline = true;
+    // 最初のフレームの読み込み完了時・シーク完了時に、停止中ならプレビュー全体を描き直す
+    // (重なり順を保つため、この動画だけを後から上書き描画することはしない)
+    const redraw = () => {
+      if (!state.isPlaying) updatePreview(state.playheadSec);
+    };
+    v.addEventListener("loadeddata", redraw);
+    v.addEventListener("seeked", redraw);
     state.videoCache[fileId] = v;
   }
   return state.videoCache[fileId];
 }
 
-// キャンバスいっぱいに、アスペクト比を保ったまま中央寄せで描画する(レターボックス)。
-// サーバー側の書き出し(moviepyでの合成)と同じフィット方式に揃えている。
-// mediaEl は HTMLImageElement または HTMLVideoElement。
-function drawMediaFit(ctx, mediaEl, canvasW, canvasH) {
+// プレビューcanvasの内部座標1pxが、画面上で何pxに当たるかの逆数を、従来の表示
+// (1280pxのcanvasを640px幅で表示)を1とした倍率で返す。選択枠やハンドルの大きさを
+// 画面サイズの設定によらず、画面上でほぼ同じ見た目にするために使う。
+function previewUiScale() {
+  const canvas = el.previewCanvas;
+  const shownWidth = canvas.clientWidth || canvas.width / 2;
+  return canvas.width / shownWidth / 2;
+}
+
+// テキストのfontSizeは「短辺720pxの画面での大きさ」として持っているので、実際の画面サイズに
+// 合わせた倍率を掛けて使う。サーバー側(app.pyの_text_scale)と同じ計算。
+function textScaleFor(canvasW, canvasH) {
+  return Math.min(canvasW, canvasH) / TEXT_REFERENCE_SHORT_SIDE;
+}
+
+// 画像・動画クリップをcanvas上のどこにどの大きさで描くかを求める。scale=1は従来通り
+// 「アスペクト比を保ったまま画面いっぱいに収まる大きさ」(レターボックス)で、
+// positionはその中心点の相対座標。サーバー側の書き出し(_fit_and_place)と同じ計算。
+function mediaRect(clip, iw, ih, canvasW, canvasH) {
+  const fit = Math.min(canvasW / iw, canvasH / ih);
+  const s = fit * (clip.scale ?? 1);
+  const width = iw * s;
+  const height = ih * s;
+  const pos = clip.position || DEFAULT_MEDIA_POSITION;
+  const centerX = (pos.x ?? DEFAULT_MEDIA_POSITION.x) * canvasW;
+  const centerY = (pos.y ?? DEFAULT_MEDIA_POSITION.y) * canvasH;
+  return { x: centerX - width / 2, y: centerY - height / 2, width, height };
+}
+
+// mediaEl は HTMLImageElement または HTMLVideoElement
+function drawMediaPlaced(ctx, mediaEl, clip, canvasW, canvasH) {
   const iw = mediaEl.naturalWidth || mediaEl.videoWidth || 0;
   const ih = mediaEl.naturalHeight || mediaEl.videoHeight || 0;
   if (!iw || !ih) return;
-  const scale = Math.min(canvasW / iw, canvasH / ih);
-  const dw = iw * scale;
-  const dh = ih * scale;
-  const dx = (canvasW - dw) / 2;
-  const dy = (canvasH - dh) / 2;
-  ctx.drawImage(mediaEl, dx, dy, dw, dh);
+  const r = mediaRect(clip, iw, ih, canvasW, canvasH);
+  ctx.drawImage(mediaEl, r.x, r.y, r.width, r.height);
+  // ヒットテスト(プレビュー画面でのドラッグ判定)用に、描画のたびに最新の矩形を覚えておく
+  state.previewBoxes[clip.clipId] = { ...r, pad: 0 };
 }
 
-// 動画クリップの該当オフセット位置へシークしてから描画する。シークは非同期(seekedイベント)
-// なので、既にほぼ同じ位置にいる場合は待たずに即描画し、大きくズレている場合だけ待つ。
-function seekAndDrawVideo(clip, offsetSec, ctx, canvasW, canvasH) {
+// 動画クリップを描く。再生中は「クリップが表示範囲に入った瞬間」にだけ開始位置へシークして
+// play()し、あとは動画自身の再生に任せて毎フレーム今映っているフレームを描くだけにする
+// (requestAnimationFrameのたびにシークし直すと、シークが重くて映像がとぎれとぎれになるため)。
+// 停止中・スクラブ中は、位置がずれていればシークだけ行い、描画はシーク完了(seeked)後の
+// 描き直しに任せる。
+function drawVideoClip(ctx, clip, sec, canvasW, canvasH) {
   const videoEl = getOrCreateVideoEl(clip.fileId, clip.url);
-  const target = Math.max(0, offsetSec);
-  const draw = () => drawMediaFit(ctx, videoEl, canvasW, canvasH);
+  let target = Math.max(0, clip.trimStart + (sec - clip.timelineStart));
+  if (videoEl.duration) target = Math.min(target, Math.max(0, videoEl.duration - 0.05));
 
-  if (videoEl.readyState >= 1 && Math.abs(videoEl.currentTime - target) < 0.08) {
-    draw();
-    return;
+  if (state.isPlaying) {
+    if (!state.playingVideos[clip.clipId]) {
+      state.playingVideos[clip.clipId] = videoEl;
+      try {
+        videoEl.currentTime = target;
+      } catch (e) {
+        // メタデータ未読込などで失敗することがある。その場合は先頭から再生される
+      }
+      videoEl.play().catch(() => {}); // 自動再生ポリシー等で失敗しても致命的ではないため無視する
+    }
+  } else if (Math.abs(videoEl.currentTime - target) >= 0.08) {
+    // 同じ位置へのシークを繰り返し要求しない(終端付近などでぴったり合わない場合の無限ループ防止)
+    if (videoEl.dataset.seekTarget !== String(target)) {
+      videoEl.dataset.seekTarget = String(target);
+      try {
+        videoEl.currentTime = target;
+        return;
+      } catch (e) {
+        // 読み込み後(loadeddata)に描き直されるので無視する
+      }
+    }
   }
-  const onSeeked = () => {
-    videoEl.removeEventListener("seeked", onSeeked);
-    draw();
-  };
-  videoEl.addEventListener("seeked", onSeeked);
+
   try {
-    videoEl.currentTime = target;
+    if (videoEl.readyState >= 2) drawMediaPlaced(ctx, videoEl, clip, canvasW, canvasH);
   } catch (e) {
-    videoEl.removeEventListener("seeked", onSeeked);
-    // メタデータ未読込などで失敗することがある。読み込み後に呼び直されるので無視する。
+    // デコードが追いついていない等でまだ描画できない場合は、そのフレームは諦めて次を待つ
   }
 }
 
-// 指定秒における「その時点で表示されているべきクリップ(画像 or 動画)」をプレビュー
-// canvasへ描画する。複数トラックが同じ時刻に重なっている場合は、後のトラックほど
-// 上に重なる(サーバー側の書き出しロジックと同じ規則)。該当が無ければ黒で塗りつぶす。
-//
-// 動画クリップの扱いに注意: 再生中(state.isPlaying)は、requestAnimationFrameのたびに
-// currentTimeへシークし直す実装にすると、シークは重い処理でありブラウザが追いつかず
-// 映像がとぎれとぎれになる。そのため再生中は「クリップが切り替わった瞬間」にだけ
-// 開始位置へシークしてvideoEl.play()を呼び、あとは動画自身の再生に任せて
-// 毎フレーム「今映っているフレーム」をそのまま描画するだけにする。
-// スクラブ中や停止中(state.isPlaying===false)は、そのつど正確な位置へシークして
-// 1枚だけ描画するこれまで通りの方式のままにしている。
-
-function pausePreviewVideo() {
-  if (state.previewVideoEl) {
-    state.previewVideoEl.pause();
-  }
-  state.previewVideoEl = null;
-  state.previewVideoClipId = null;
+function pausePreviewVideos() {
+  for (const v of Object.values(state.playingVideos)) v.pause();
+  state.playingVideos = {};
 }
 
 // ---------- テキストクリップの描画 ----------
-// サーバー側(app.pyの_wrap_text_to_width / _text_anchor_xy)と同じ考え方で折り返し・
+// サーバー側(app.pyの_wrap_text_to_width / _center_to_topleft)と同じ考え方で折り返し・
 // 配置を行う。スペースの無い日本語でも折り返せるよう、単語単位ではなく1文字ずつ幅を
 // 測って折り返す。canvasのテキスト描画とPillow/moviepyのテキスト描画は仕組みが違うため
 // ピクセル単位では一致しないが、プレビューとしては十分な近似になる(正確な見た目は
@@ -263,25 +319,37 @@ function textClipFontCss(fontKey, fontSize) {
 }
 
 const DEFAULT_TEXT_POSITION = { x: 0.5, y: 0.82 }; // プレビューでドラッグする前の初期位置(中心点の相対座標)
-const TEXT_RESIZE_HANDLE_SIZE = 14; // 四隅のリサイズハンドルの大きさ(canvas内部座標のpx)
+const DEFAULT_MEDIA_POSITION = { x: 0.5, y: 0.5 }; // 画像・動画の初期位置(画面中央)
+const SELECTION_HANDLE_SIZE = 14; // 四隅のリサイズハンドルの大きさ(previewUiScale()=1の時のcanvas内部座標のpx)
+const TEXT_FRAME_PAD = 8; // テキストの選択枠を、文字の外側にどれだけ広げるか(同上)
 
-function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
-  const fontSize = clip.fontSize || DEFAULT_TEXT_FONT_SIZE;
+// テキストブロックの折り返し結果と寸法を測る(ctx.fontもこのクリップ用に設定される)
+function measureTextBlock(ctx, clip, canvasW, canvasH) {
+  const fontSize = (clip.fontSize || DEFAULT_TEXT_FONT_SIZE) * textScaleFor(canvasW, canvasH);
   ctx.font = textClipFontCss(clip.fontKey, fontSize);
   const lineHeight = fontSize * 1.3;
-  const maxWidthPx = canvasW * TEXT_MAX_WIDTH_RATIO;
-  const lines = wrapTextToWidth(ctx, clip.text || "", maxWidthPx);
-  const blockWidth = Math.max(1, ...lines.map((l) => ctx.measureText(l).width));
-  const blockHeight = lines.length * lineHeight;
+  const lines = wrapTextToWidth(ctx, clip.text || "", canvasW * TEXT_MAX_WIDTH_RATIO);
+  const width = Math.max(1, ...lines.map((l) => ctx.measureText(l).width));
+  return { fontSize, lineHeight, lines, width, height: lines.length * lineHeight };
+}
+
+function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
+  const { fontSize, lineHeight, lines, width, height } = measureTextBlock(ctx, clip, canvasW, canvasH);
 
   const pos = clip.position || DEFAULT_TEXT_POSITION;
   const centerX = (pos.x ?? DEFAULT_TEXT_POSITION.x) * canvasW;
   const centerY = (pos.y ?? DEFAULT_TEXT_POSITION.y) * canvasH;
-  const blockX = centerX - blockWidth / 2;
-  const blockY = centerY - blockHeight / 2;
+  const blockX = centerX - width / 2;
+  const blockY = centerY - height / 2;
 
   // ヒットテスト(プレビュー画面でのドラッグ判定)用に、描画のたびに最新の矩形を覚えておく
-  state.textBoundingBoxes[clip.clipId] = { x: blockX, y: blockY, width: blockWidth, height: blockHeight };
+  state.previewBoxes[clip.clipId] = {
+    x: blockX,
+    y: blockY,
+    width,
+    height,
+    pad: TEXT_FRAME_PAD * previewUiScale(),
+  };
 
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
@@ -291,136 +359,144 @@ function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
   ctx.fillStyle = "white";
 
   lines.forEach((line, i) => {
-    const cx = blockX + blockWidth / 2;
+    const cx = blockX + width / 2;
     const cy = blockY + i * lineHeight + fontSize * 0.85;
     ctx.strokeText(line, cx, cy);
     ctx.fillText(line, cx, cy);
   });
-
-  // 選択中のテキストクリップは、ドラッグで動かせる/四隅でリサイズできることが分かるよう
-  // 枠と四隅のハンドルを表示する。ハンドルの位置はここで記録し、リサイズのヒットテストに使う。
-  if (clip.clipId === state.selectedClipId) {
-    const pad = 8;
-    const left = blockX - pad;
-    const top = blockY - pad;
-    const right = blockX + blockWidth + pad;
-    const bottom = blockY + blockHeight + pad;
-
-    ctx.save();
-    ctx.setLineDash([6, 4]);
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.strokeRect(left, top, right - left, bottom - top);
-    ctx.restore();
-
-    const corners = {
-      "top-left": { x: left, y: top },
-      "top-right": { x: right, y: top },
-      "bottom-left": { x: left, y: bottom },
-      "bottom-right": { x: right, y: bottom },
-    };
-    ctx.save();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "#fff";
-    ctx.strokeStyle = "#5b8cff";
-    ctx.lineWidth = 2;
-    const half = TEXT_RESIZE_HANDLE_SIZE / 2;
-    for (const key of Object.keys(corners)) {
-      const c = corners[key];
-      ctx.fillRect(c.x - half, c.y - half, TEXT_RESIZE_HANDLE_SIZE, TEXT_RESIZE_HANDLE_SIZE);
-      ctx.strokeRect(c.x - half, c.y - half, TEXT_RESIZE_HANDLE_SIZE, TEXT_RESIZE_HANDLE_SIZE);
-    }
-    ctx.restore();
-    state.textResizeHandles[clip.clipId] = corners;
-  } else {
-    delete state.textResizeHandles[clip.clipId];
-  }
 }
 
-function drawTextOverlays(ctx, textClips, canvasW, canvasH) {
-  for (const clip of textClips) {
+// 選択中のクリップ(テキスト・画像・動画)に、ドラッグで動かせる/四隅でリサイズできることが
+// 分かるよう枠と四隅のハンドルを描く。他のクリップに隠れないよう、すべて描いた後に呼ぶ。
+// ハンドルの位置はここで記録し、リサイズのヒットテストに使う。
+function drawSelectionFrame(ctx) {
+  state.previewHandles = null;
+  const box = state.selectedClipId && state.previewBoxes[state.selectedClipId];
+  if (!box) return;
+
+  const ui = previewUiScale();
+  const left = box.x - box.pad;
+  const top = box.y - box.pad;
+  const right = box.x + box.width + box.pad;
+  const bottom = box.y + box.height + box.pad;
+
+  ctx.save();
+  ctx.setLineDash([6 * ui, 4 * ui]);
+  ctx.lineWidth = 2 * ui;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.strokeRect(left, top, right - left, bottom - top);
+  ctx.restore();
+
+  const corners = {
+    "top-left": { x: left, y: top },
+    "top-right": { x: right, y: top },
+    "bottom-left": { x: left, y: bottom },
+    "bottom-right": { x: right, y: bottom },
+  };
+  const size = SELECTION_HANDLE_SIZE * ui;
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#fff";
+  ctx.strokeStyle = "#5b8cff";
+  ctx.lineWidth = 2 * ui;
+  for (const c of Object.values(corners)) {
+    ctx.fillRect(c.x - size / 2, c.y - size / 2, size, size);
+    ctx.strokeRect(c.x - size / 2, c.y - size / 2, size, size);
+  }
+  ctx.restore();
+  state.previewHandles = { clipId: state.selectedClipId, corners };
+}
+
+// 指定秒において表示されているクリップを、表示されるべき順に返す。
+// visuals: 画像・動画(後のトラックほど上に重なる)、texts: テキスト(常に画像・動画より上)
+function activePreviewClips(sec) {
+  const visuals = [];
+  const texts = [];
+  for (const track of state.tracks) {
+    for (const clip of track.clips) {
+      const start = clip.timelineStart;
+      const end = start + (clip.trimEnd - clip.trimStart);
+      if (sec < start || sec >= end) continue;
+      if (clip.kind === "image" || clip.kind === "video") visuals.push(clip);
+      else if (clip.kind === "text") texts.push(clip);
+    }
+  }
+  return { visuals, texts };
+}
+
+// 指定秒における画面をプレビューcanvasへ描画する。表示中の画像・動画をすべて行の順に
+// (後のトラックほど上に)重ね、その上にテキストを重ねる(サーバー側の書き出しと同じ規則)。
+// 該当が無い部分は黒になる。重なり順を崩さないよう、描画はすべて同期的に1回で行い、
+// まだ読み込めていない画像・動画は読み込み完了時に描き直す。
+function updatePreview(sec) {
+  const canvas = el.previewCanvas;
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const canvasW = canvas.width;
+  const canvasH = canvas.height;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvasW, canvasH);
+  state.previewBoxes = {};
+
+  const { visuals, texts } = activePreviewClips(sec);
+
+  // 再生中の動画のうち、表示範囲から外れたもの(停止中は全部)を止める
+  const activeIds = new Set(visuals.map((c) => c.clipId));
+  for (const [clipId, v] of Object.entries(state.playingVideos)) {
+    if (!state.isPlaying || !activeIds.has(clipId)) {
+      v.pause();
+      delete state.playingVideos[clipId];
+    }
+  }
+
+  for (const clip of visuals) {
+    if (clip.kind === "image") {
+      const img = state.loadedImages[clip.fileId];
+      if (img) drawMediaPlaced(ctx, img, clip, canvasW, canvasH);
+      else loadImage(clip.fileId, clip.url).catch(() => {});
+    } else {
+      drawVideoClip(ctx, clip, sec, canvasW, canvasH);
+    }
+  }
+
+  for (const clip of texts) {
     try {
       drawSingleTextClip(ctx, clip, canvasW, canvasH);
     } catch (e) {
       // フォント未読込などで失敗しても他のクリップの描画は止めない
     }
   }
+
+  drawSelectionFrame(ctx);
 }
 
-function updatePreview(sec) {
-  const canvas = el.previewCanvas;
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+// ---------- 出力画面サイズ ----------
+// プレビューcanvasの内部解像度 = 書き出す動画の解像度。位置(position)・大きさ(scale)は
+// 画面に対する相対値で持っているので、サイズを切り替えても配置の比率は崩れない。
 
-  let activeVisual = null;
-  const activeTexts = [];
-  for (const track of state.tracks) {
-    for (const clip of track.clips) {
-      const start = clip.timelineStart;
-      const end = start + (clip.trimEnd - clip.trimStart);
-      if (sec < start || sec >= end) continue;
-      if (clip.kind === "image" || clip.kind === "video") {
-        activeVisual = clip; // 後のトラックほど上に重なる
-      } else if (clip.kind === "text") {
-        activeTexts.push(clip); // 複数重なっていてもすべて描く(後のトラックほど上)
-      }
-    }
-  }
-
-  const stillPlayingSameVideo =
-    state.isPlaying &&
-    activeVisual &&
-    activeVisual.kind === "video" &&
-    state.previewVideoClipId === activeVisual.clipId;
-
-  if (!stillPlayingSameVideo) pausePreviewVideo();
-
-  if (activeVisual && activeVisual.kind === "image") {
-    loadImage(activeVisual.fileId, activeVisual.url)
-      .then((img) => {
-        drawMediaFit(ctx, img, canvas.width, canvas.height);
-        drawTextOverlays(ctx, activeTexts, canvas.width, canvas.height);
-      })
-      .catch(() => {});
-    return;
-  }
-
-  if (activeVisual && activeVisual.kind === "video") {
-    const offsetIntoClip = activeVisual.trimStart + (sec - activeVisual.timelineStart);
-    const videoEl = getOrCreateVideoEl(activeVisual.fileId, activeVisual.url);
-
-    if (!state.isPlaying) {
-      // スクラブ/停止中: 対象フレームへシークしてから1回だけ描画する
-      seekAndDrawVideo(activeVisual, offsetIntoClip, ctx, canvas.width, canvas.height);
-      drawTextOverlays(ctx, activeTexts, canvas.width, canvas.height);
-      return;
-    }
-
-    if (!stillPlayingSameVideo) {
-      // このクリップの再生に入った最初のフレーム: 開始位置へシークして再生を始める
-      state.previewVideoEl = videoEl;
-      state.previewVideoClipId = activeVisual.clipId;
-      videoEl.currentTime = Math.max(0, offsetIntoClip);
-      videoEl.play().catch(() => {}); // 自動再生ポリシー等で失敗しても致命的ではないため無視する
-    }
-
-    // 2フレーム目以降は改めてシークせず、動画が自然に進めている現在のフレームをそのまま描く
-    try {
-      if (videoEl.readyState >= 2) drawMediaFit(ctx, videoEl, canvas.width, canvas.height);
-    } catch (e) {
-      // デコードが追いついていない等でまだ描画できない場合は、そのフレームは諦めて次を待つ
-    }
-  }
-
-  // 画像・動画の同期描画パス、および何も表示すべきものが無い(黒背景の)場合はここでテキストを重ねる
-  drawTextOverlays(ctx, activeTexts, canvas.width, canvas.height);
+function applyCanvasSize(key) {
+  const preset = CANVAS_PRESETS[key] || CANVAS_PRESETS[DEFAULT_CANVAS_PRESET];
+  el.previewCanvas.width = preset.w;
+  el.previewCanvas.height = preset.h;
+  // プレビュー枠は縦横比を合わせ、高さがPREVIEW_MAX_HEIGHT_PXを超えないようにする
+  // (縦長にした時に画面が縦に伸びすぎないようにするため)
+  el.previewWrap.style.aspectRatio = `${preset.w} / ${preset.h}`;
+  el.previewWrap.style.width = `min(100%, ${Math.round((PREVIEW_MAX_HEIGHT_PX * preset.w) / preset.h)}px)`;
+  updatePreview(state.playheadSec);
 }
 
-// ---------- プレビュー画面でのテキストドラッグ配置 ----------
-// 一般的な動画編集ソフトと同様、テキストクリップをプレビュー画面上で直接ドラッグして
-// 位置(画面上の相対座標)を変更できるようにする。
+for (const [key, preset] of Object.entries(CANVAS_PRESETS)) {
+  const opt = document.createElement("option");
+  opt.value = key;
+  opt.textContent = preset.label;
+  el.canvasSizeSelect.appendChild(opt);
+}
+el.canvasSizeSelect.value = DEFAULT_CANVAS_PRESET;
+el.canvasSizeSelect.addEventListener("change", () => applyCanvasSize(el.canvasSizeSelect.value));
+
+// ---------- プレビュー画面でのドラッグ配置・拡大縮小 ----------
+// 一般的な動画編集ソフトと同様、テキスト・画像・動画クリップをプレビュー画面上で直接
+// ドラッグして位置(画面上の相対座標)を変え、四隅のハンドルで大きさを変えられるようにする。
 
 function canvasCoordsFromEvent(e) {
   const canvas = el.previewCanvas;
@@ -431,34 +507,26 @@ function canvasCoordsFromEvent(e) {
   };
 }
 
-// 指定した座標(canvas内部座標)に重なる、現在再生ヘッド位置で表示されているテキストクリップを探す。
-// 複数重なっている場合は後のトラックのもの(=見た目で一番上にあるもの)を優先する。
-function findTextClipAtPoint(x, y) {
-  let found = null;
-  for (const track of state.tracks) {
-    for (const clip of track.clips) {
-      if (clip.kind !== "text") continue;
-      const start = clip.timelineStart;
-      const end = start + (clip.trimEnd - clip.trimStart);
-      if (state.playheadSec < start || state.playheadSec >= end) continue; // 今表示されていないものは対象外
-      const box = state.textBoundingBoxes[clip.clipId];
-      if (!box) continue;
-      if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) {
-        found = clip; // 後で見つかったものほど上書き = 見た目で一番上のものが残る
-      }
-    }
-  }
-  return found;
+// 指定した座標(canvas内部座標)に重なる、現在再生ヘッド位置で表示されているクリップを探す。
+// 見た目で一番上にあるもの(テキスト → 後のトラックの画像・動画 の順)を優先する。
+function findPreviewClipAtPoint(x, y) {
+  const { visuals, texts } = activePreviewClips(state.playheadSec);
+  const topFirst = [...texts.reverse(), ...visuals.reverse()];
+  return (
+    topFirst.find((clip) => {
+      const box = state.previewBoxes[clip.clipId];
+      return box && x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height;
+    }) || null
+  );
 }
 
 // 指定した座標(canvas内部座標)が、選択中クリップの四隅リサイズハンドルに重なっているか調べる
 function findResizeHandleAtPoint(x, y) {
-  if (!state.selectedClipId) return null;
-  const handles = state.textResizeHandles[state.selectedClipId];
-  if (!handles) return null;
-  const half = TEXT_RESIZE_HANDLE_SIZE / 2 + 4; // 少し広めに当たり判定を取り、つかみやすくする
-  for (const corner of Object.keys(handles)) {
-    const h = handles[corner];
+  const handles = state.previewHandles;
+  if (!handles || handles.clipId !== state.selectedClipId) return null;
+  const ui = previewUiScale();
+  const half = (SELECTION_HANDLE_SIZE / 2 + 4) * ui; // 少し広めに当たり判定を取り、つかみやすくする
+  for (const [corner, h] of Object.entries(handles.corners)) {
     if (x >= h.x - half && x <= h.x + half && y >= h.y - half && y <= h.y + half) {
       return corner;
     }
@@ -466,13 +534,14 @@ function findResizeHandleAtPoint(x, y) {
   return null;
 }
 
-function startTextMove(clip, x, y) {
+function startPreviewMove(clip, x, y) {
   state.selectedClipId = clip.clipId;
-  const pos = clip.position || DEFAULT_TEXT_POSITION;
+  const defaultPos = clip.kind === "text" ? DEFAULT_TEXT_POSITION : DEFAULT_MEDIA_POSITION;
+  const pos = clip.position || defaultPos;
   const canvas = el.previewCanvas;
   const dragOffset = {
-    x: x - pos.x * canvas.width,
-    y: y - pos.y * canvas.height,
+    x: x - (pos.x ?? defaultPos.x) * canvas.width,
+    y: y - (pos.y ?? defaultPos.y) * canvas.height,
   };
   el.previewCanvas.style.cursor = "grabbing";
   renderAll(); // タイムライン側の選択状態(枠のハイライト)も同期する
@@ -496,24 +565,31 @@ function startTextMove(clip, x, y) {
   document.addEventListener("mouseup", onUp);
 }
 
-// 四隅のハンドルをドラッグして文字サイズを変える。ドラッグした角の対角(固定角)からの距離の
-// 比率をそのまま拡大率とし、固定角が画面上で動かないように中心位置(position)を再計算する。
-function startTextResize(clip, corner) {
+// 四隅のハンドルをドラッグして大きさを変える(テキストは文字サイズ、画像・動画はscale)。
+// ドラッグした角の対角(固定角)からの距離の比率をそのまま拡大率とし、固定角が画面上で
+// 動かないように中心位置(position)を再計算する。
+function startPreviewResize(clip, corner) {
   const canvas = el.previewCanvas;
-  const handles = state.textResizeHandles[clip.clipId];
-  if (!handles) return;
+  const handles = state.previewHandles;
+  const box = state.previewBoxes[clip.clipId];
+  if (!handles || handles.clipId !== clip.clipId || !box) return;
 
-  const pad = 8;
   const oppositeOf = {
     "top-left": "bottom-right",
     "top-right": "bottom-left",
     "bottom-left": "top-right",
     "bottom-right": "top-left",
   };
-  const dragged = handles[corner];
-  const fixed = handles[oppositeOf[corner]];
+  const dragged = handles.corners[corner];
+  const fixed = handles.corners[oppositeOf[corner]];
   const startDist = Math.hypot(dragged.x - fixed.x, dragged.y - fixed.y) || 1;
+  const pad = box.pad;
+  const isText = clip.kind === "text";
   const startFontSize = clip.fontSize || DEFAULT_TEXT_FONT_SIZE;
+  const startScale = clip.scale ?? 1;
+  // 画像・動画の、scale=1の時の寸法(canvas内部座標)
+  const baseWidth = box.width / startScale;
+  const baseHeight = box.height / startScale;
   const isLeft = corner.endsWith("left");
   const isTop = corner.startsWith("top");
 
@@ -522,17 +598,21 @@ function startTextResize(clip, corner) {
   function onMove(ev) {
     const p = canvasCoordsFromEvent(ev);
     const currentDist = Math.hypot(p.x - fixed.x, p.y - fixed.y);
-    const scale = Math.max(0.1, currentDist / startDist);
-    clip.fontSize = Math.max(MIN_TEXT_FONT_SIZE, Math.min(MAX_TEXT_FONT_SIZE, startFontSize * scale));
+    const ratio = Math.max(0.1, currentDist / startDist);
 
-    // 新しいフォントサイズでの寸法を測り直し、固定角の画面上の位置が変わらないよう中心を再計算する
-    const ctx = canvas.getContext("2d");
-    ctx.font = textClipFontCss(clip.fontKey, clip.fontSize);
-    const lineHeight = clip.fontSize * 1.3;
-    const maxWidthPx = canvas.width * TEXT_MAX_WIDTH_RATIO;
-    const lines = wrapTextToWidth(ctx, clip.text || "", maxWidthPx);
-    const newWidth = Math.max(1, ...lines.map((l) => ctx.measureText(l).width));
-    const newHeight = lines.length * lineHeight;
+    // 新しい大きさでの寸法を求め、固定角の画面上の位置が変わらないよう中心を再計算する
+    let newWidth;
+    let newHeight;
+    if (isText) {
+      clip.fontSize = Math.max(MIN_TEXT_FONT_SIZE, Math.min(MAX_TEXT_FONT_SIZE, startFontSize * ratio));
+      const m = measureTextBlock(canvas.getContext("2d"), clip, canvas.width, canvas.height);
+      newWidth = m.width;
+      newHeight = m.height;
+    } else {
+      clip.scale = Math.max(MIN_MEDIA_SCALE, Math.min(MAX_MEDIA_SCALE, startScale * ratio));
+      newWidth = baseWidth * clip.scale;
+      newHeight = baseHeight * clip.scale;
+    }
 
     const newCenterX = isLeft ? fixed.x - pad - newWidth / 2 : fixed.x + pad + newWidth / 2;
     const newCenterY = isTop ? fixed.y - pad - newHeight / 2 : fixed.y + pad + newHeight / 2;
@@ -558,26 +638,26 @@ el.previewCanvas.addEventListener("mousedown", (e) => {
   if (handleCorner) {
     e.preventDefault();
     const found = findClip(state.selectedClipId);
-    if (found) startTextResize(found.clip, handleCorner);
+    if (found) startPreviewResize(found.clip, handleCorner);
     return;
   }
 
-  const clip = findTextClipAtPoint(x, y);
+  const clip = findPreviewClipAtPoint(x, y);
   if (!clip) return;
   e.preventDefault();
-  startTextMove(clip, x, y);
+  startPreviewMove(clip, x, y);
 });
 
-// ダブルクリックで、選択中のテキストクリップの内容を直接編集するパネルを開く
+// ダブルクリックで、テキストクリップの内容を直接編集するパネルを開く
 el.previewCanvas.addEventListener("dblclick", (e) => {
   const { x, y } = canvasCoordsFromEvent(e);
-  const clip = findTextClipAtPoint(x, y);
-  if (!clip) return;
+  const clip = findPreviewClipAtPoint(x, y);
+  if (!clip || clip.kind !== "text") return;
   e.preventDefault();
   openTextPanel("edit", { clip }, e.clientX, e.clientY);
 });
 
-// ドラッグ中でない時は、ハンドル/テキストの上にカーソルが来たら操作できることを示す
+// ドラッグ中でない時は、ハンドル/クリップの上にカーソルが来たら操作できることを示す
 el.previewCanvas.addEventListener("mousemove", (e) => {
   const { x, y } = canvasCoordsFromEvent(e);
   const handleCorner = findResizeHandleAtPoint(x, y);
@@ -587,7 +667,7 @@ el.previewCanvas.addEventListener("mousemove", (e) => {
     el.previewCanvas.style.cursor = isLeft === isTop ? "nwse-resize" : "nesw-resize";
     return;
   }
-  el.previewCanvas.style.cursor = findTextClipAtPoint(x, y) ? "grab" : "default";
+  el.previewCanvas.style.cursor = findPreviewClipAtPoint(x, y) ? "grab" : "default";
 });
 
 // ---------- アップロード ----------
@@ -1211,6 +1291,7 @@ async function deleteTrackFile(track) {
       }
       delete state.bufferCache[fileId];
       delete state.imageCache[fileId];
+      delete state.loadedImages[fileId];
       delete state.videoCache[fileId];
     }
   }
@@ -1244,6 +1325,7 @@ el.clearUploadsBtn.addEventListener("click", async () => {
     state.selectedClipId = null;
     state.bufferCache = {};
     state.imageCache = {};
+    state.loadedImages = {};
     state.videoCache = {};
     setStatus(`削除しました(${data.deleted ?? 0}件)`);
     renderAll();
@@ -1309,7 +1391,7 @@ attachScrub(el.ruler);
 
 function stopPlayback() {
   state.isPlaying = false;
-  pausePreviewVideo(); // プレビュー用に再生していた<video>があれば止める
+  pausePreviewVideos(); // プレビュー用に再生していた<video>があれば止める
   state.activeSources.forEach((source) => {
     try {
       source.stop();
@@ -1433,6 +1515,8 @@ el.exportBtn.addEventListener("click", async () => {
         fontSize: clip.fontSize,
         positionX: clip.position ? clip.position.x : undefined,
         positionY: clip.position ? clip.position.y : undefined,
+        // 画像・動画クリップの大きさ(1 = 画面いっぱいに収まる大きさ)
+        scale: clip.scale,
       });
     }
   }
@@ -1474,7 +1558,12 @@ el.exportBtn.addEventListener("click", async () => {
     const res = await fetch("/api/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clips, format: fmt }),
+      body: JSON.stringify({
+        clips,
+        format: fmt,
+        canvasWidth: el.previewCanvas.width,
+        canvasHeight: el.previewCanvas.height,
+      }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -1800,6 +1889,9 @@ function replaceClipWithAsset(oldClip, data) {
     trimEnd: data.duration,
     timelineStart: oldClip.timelineStart,
     trackId: oldClip.trackId,
+    // プレビュー上で調整した位置・大きさは、置き換え後の動画にも引き継ぐ
+    position: oldClip.position,
+    scale: oldClip.scale,
   };
   track.clips[idx] = newClip;
   if (state.selectedClipId === oldClip.clipId) state.selectedClipId = newClip.clipId;
@@ -2109,4 +2201,5 @@ el.settingsClearBtn.addEventListener("click", () => {
 
 // 初期描画: 最初から空のオーバーレイを1つ用意しておく
 state.tracks.push(newOverlayTrack());
+applyCanvasSize(el.canvasSizeSelect.value);
 renderAll();

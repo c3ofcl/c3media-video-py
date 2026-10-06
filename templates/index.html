@@ -24,6 +24,8 @@
       <button id="deleteBtn" class="btn" title="選択中のクリップを削除">🗑 削除</button>
       <button id="clearUploadsBtn" class="btn" title="サーバーに保存されているファイルを全て削除します。注：編集中のデータが消えます">🧹 編集状態をリセット</button>
       <span class="spacer"></span>
+      <!-- 選択肢はscript.jsのCANVAS_PRESETSから作る -->
+      <select id="canvasSizeSelect" class="select" title="プレビューと書き出す動画の画面サイズ"></select>
       <select id="formatSelect" class="select">
         <option value="mp4">MP4（動画）</option>
         <option value="wav">WAV（音声のみ）</option>
@@ -38,7 +40,7 @@
 
   <section class="preview-panel">
     <h2 class="preview-title">プレビュー</h2>
-    <div class="preview-canvas-wrap">
+    <div class="preview-canvas-wrap" id="previewWrap">
       <canvas id="previewCanvas" width="1280" height="720"></canvas>
     </div>
   </section>
