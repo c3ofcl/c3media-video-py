@@ -1672,18 +1672,18 @@ function populateAspectRatioSelect(mode) {
     mode === "image"
       ? [
           { value: "", label: "おまかせ (auto)" },
-          { value: "1:1", label: "1:1(正方形)" },
           { value: "16:9", label: "16:9(横長)" },
-          { value: "9:16", label: "9:16(縦長)" },
           { value: "4:3", label: "4:3(横長)" },
           { value: "3:2", label: "3:2(横長)" },
+          { value: "9:16", label: "9:16(縦長)" },
           { value: "4:5", label: "4:5(縦長)" },
           { value: "2:3", label: "2:3(縦長)" },
+          { value: "1:1", label: "1:1(正方形)" },
         ]
       : [
-          { value: "1:1", label: "1:1(正方形)" },
           { value: "16:9", label: "16:9(横長)" },
           { value: "9:16", label: "9:16(縦長)" },
+          { value: "1:1", label: "1:1(正方形)" },
         ];
   for (const opt of options) {
     const optionEl = document.createElement("option");
