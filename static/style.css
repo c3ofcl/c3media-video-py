@@ -16,12 +16,12 @@
    キーはscript.js内のFONT_REGISTRYおよびapp.py内のFONT_REGISTRYと対応させること。 */
 @font-face {
   font-family: "AppFont-NotoSansJP";
-  src: url("fonts/NotoSansJP-Variable.ttf");
+  src: url("fonts/NotoSansJP-Regular.ttf");
   font-display: swap;
 }
 @font-face {
   font-family: "AppFont-NotoSerifJP";
-  src: url("fonts/NotoSerifJP-Variable.ttf");
+  src: url("fonts/NotoSerifJP-Regular.ttf");
   font-display: swap;
 }
 @font-face {

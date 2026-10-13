@@ -32,6 +32,7 @@
   ブラウザで http://127.0.0.1:5000 を開く
 """
 
+import math
 import os
 import uuid
 
@@ -43,8 +44,9 @@ load_dotenv(ENV_PATH)
 
 from flask import Flask, request, jsonify, send_from_directory, render_template
 from pydub import AudioSegment
-from PIL import Image, ImageOps, ImageFont
-from moviepy import ImageClip, VideoFileClip, ColorClip, CompositeVideoClip, AudioFileClip, TextClip
+import numpy as np
+from PIL import Image, ImageDraw, ImageOps, ImageFont
+from moviepy import ImageClip, VideoFileClip, ColorClip, CompositeVideoClip, AudioFileClip
 
 import magic_hour_client
 
@@ -83,7 +85,7 @@ MAX_MEDIA_SCALE = 4.0
 DEFAULT_MEDIA_POSITION = (0.5, 0.5)
 
 # ---------- テキストクリップ ----------
-# プレビュー(ブラウザのcanvas)と書き出し(下記TextClip)の両方で同じフォントファイルを
+# プレビュー(ブラウザのcanvas)と書き出し(Pillowでの描画、_render_text_image)の両方で同じフォントファイルを
 # 直接参照することで、見た目が食い違わないようにしている。キーはフロントエンドの
 # script.js内のFONT_REGISTRYと対応しているので、増減する場合は両方を変更すること。
 FONTS_DIR = os.path.join(BASE_DIR, "static", "fonts")
@@ -604,10 +606,9 @@ def export_audio(clips, fmt):
 
 def _wrap_text_to_width(text, font_path, font_size, max_width_px):
     """
-    「caption」モードはテキストの長さに関わらず指定した幅いっぱいの箱になってしまい、
-    (今回のような)9方位への正確な配置ができなくなる。そこで自前で文字単位の折り返しを
-    行い、実際の内容にぴったり収まる「label」モードで使う。単語区切り(スペース)が無い
-    日本語でも問題なく折り返せるよう、単語単位ではなく1文字ずつ幅を測って折り返す。
+    テキストを、指定した幅に収まるよう折り返す(script.jsのwrapTextToWidthと同じ処理)。
+    単語区切り(スペース)が無い日本語でも問題なく折り返せるよう、単語単位ではなく
+    1文字ずつ幅を測って折り返す。
     """
     font = ImageFont.truetype(font_path, font_size)
     out_lines = []
@@ -625,6 +626,48 @@ def _wrap_text_to_width(text, font_path, font_size, max_width_px):
                 current = trial
         out_lines.append(current)
     return "\n".join(out_lines)
+
+
+# 1行の高さと、行の上端からベースラインまでの距離(いずれも文字サイズに対する倍率)。
+# script.jsのmeasureTextBlock / drawSingleTextClipと揃えること(プレビューと位置がずれないように)。
+TEXT_LINE_HEIGHT_RATIO = 1.3
+TEXT_BASELINE_RATIO = 0.85
+
+
+def _render_text_image(text, font_path, font_size, max_width_px):
+    """
+    テキストクリップを、プレビュー(script.jsのdrawSingleTextClip)と同じ並べ方でRGBA画像に描く。
+    (moviepyのTextClipは内部の余白・ベースラインの位置がプレビューと違い、同じ位置を指定しても
+     文字が下にずれて画面の下端で切れることがあったため、自前で描いている)
+    戻り値: (画像, 余白pad, 文字ブロックの幅, 文字ブロックの高さ)
+      文字ブロックはプレビューの選択枠・配置の基準になる矩形で、画像はその外側にpadずつ余白を持つ
+      (極太フォントなど、行の枠からはみ出す字形や縁取りも欠けないようにするため)。
+    """
+    font = ImageFont.truetype(font_path, font_size)
+    lines = _wrap_text_to_width(text, font_path, font_size, max_width_px).split("\n")
+    line_h = font_size * TEXT_LINE_HEIGHT_RATIO
+    block_w = max(1.0, max(font.getlength(line) for line in lines))
+    block_h = len(lines) * line_h
+    # canvasのstrokeText(線幅 fontSize/8)は線の半分が外側に出るので、外側への太さはfontSize/16で揃う
+    stroke = max(1, round(font_size / 16))
+    pad = math.ceil(font_size * 0.5) + stroke
+
+    img = Image.new("RGBA", (math.ceil(block_w) + pad * 2, math.ceil(block_h) + pad * 2), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    for i, line in enumerate(lines):
+        if not line:
+            continue
+        # anchor="ms": 水平は中央・垂直はベースライン(プレビューのtextAlign=center / textBaseline=alphabetic)
+        draw.text(
+            (pad + block_w / 2, pad + i * line_h + font_size * TEXT_BASELINE_RATIO),
+            line,
+            font=font,
+            fill="white",
+            anchor="ms",
+            stroke_width=stroke,
+            stroke_fill="black",
+        )
+    return img, pad, block_w, block_h
 
 
 def _parse_media_scale(value):
@@ -728,20 +771,12 @@ def export_video(clips, canvas_size=VIDEO_CANVAS_SIZE):
         font_path = _font_path(font_key)
         font_size = max(1, round(font_size * text_scale))  # 画面サイズに合わせた実際のピクセル数
         max_width_px = canvas_w * TEXT_MAX_WIDTH_RATIO
-        wrapped = _wrap_text_to_width(text, font_path, font_size, max_width_px)
-        txt_clip = TextClip(
-            font=font_path,
-            text=wrapped,
-            font_size=font_size,
-            color="white",
-            stroke_color="black",
-            stroke_width=max(1, round(font_size / 16)),
-            method="label",  # 自前で折り返し済みなので、実際の内容にぴったり収まるlabelを使う
-            text_align="center",
-            duration=dur,
-        )
-        xy = _center_to_topleft(pos_x, pos_y, txt_clip.w, txt_clip.h, canvas_w, canvas_h, DEFAULT_TEXT_POSITION)
-        layers.append(txt_clip.with_position(xy).with_start(timeline_start))
+        img, pad, block_w, block_h = _render_text_image(text, font_path, font_size, max_width_px)
+        # RGBAの配列を渡すと、透明部分はmoviepyが自動でマスクにする
+        txt_clip = ImageClip(np.array(img), duration=dur)
+        # 位置の基準は文字ブロック(プレビューと同じ)。画像はその外側にpadの余白を持つ
+        bx, by = _center_to_topleft(pos_x, pos_y, block_w, block_h, canvas_w, canvas_h, DEFAULT_TEXT_POSITION)
+        layers.append(txt_clip.with_position((bx - pad, by - pad)).with_start(timeline_start))
 
     video = CompositeVideoClip(layers, size=canvas_size).with_duration(total_end_sec)
 
