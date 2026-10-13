@@ -31,16 +31,22 @@ const TEXT_REFERENCE_SHORT_SIDE = 720;
 const MIN_MEDIA_SCALE = 0.1;
 const MAX_MEDIA_SCALE = 4;
 
-// 出力画面サイズ(プレビューcanvasの解像度 = 書き出す動画の解像度)の候補。
-// サーバー側(app.pyのALLOWED_CANVAS_SIZES)と揃えること
+// 出力画面サイズ(プレビューcanvasの解像度 = 書き出す動画の解像度)の候補。選択欄の最後には
+// 「カスタム」が付き、幅・高さをMIN〜MAX_CANVAS_SIDEの偶数で自由に指定できる
+// (H.264(yuv420p)は奇数サイズを扱えないため偶数に丸める)。
+// MIN/MAX_CANVAS_SIDEはサーバー側(app.pyのMIN/MAX_CANVAS_SIDE)と揃えること
 const CANVAS_PRESETS = {
-  "1280x720": { w: 1280, h: 720, label: "横長 16:9 (1280×720)" },
   "1920x1080": { w: 1920, h: 1080, label: "横長 16:9 (1920×1080)" },
   "1080x1920": { w: 1080, h: 1920, label: "縦長 9:16 (1080×1920)" },
   "1080x1080": { w: 1080, h: 1080, label: "正方形 1:1 (1080×1080)" },
 };
-const DEFAULT_CANVAS_PRESET = "1280x720";
-const PREVIEW_MAX_HEIGHT_PX = 360; // プレビュー枠の表示上の最大の高さ(16:9の時に幅640pxになる)
+const DEFAULT_CANVAS_PRESET = "1920x1080";
+const CUSTOM_CANVAS_KEY = "custom";
+const MIN_CANVAS_SIDE = 240;
+const MAX_CANVAS_SIDE = 1920;
+const PREVIEW_MAX_HEIGHT_PX = 300; // プレビュー枠の表示上の最大の高さ(大きな画面でも大きくなりすぎないように)
+const PREVIEW_MAX_WIDTH_PX = 640; // 同じく最大の幅(横長のカスタムサイズで横に広がりすぎないように)
+const EDITOR_MIN_HEIGHT_RATIO = 1 / 3; // 下のタイムラインに、画面の高さの少なくともこの割合を残す
 
 const state = {
   tracks: [],       // [{trackId, label, clips: [clip, ...]}]
@@ -78,6 +84,9 @@ const el = {
   formatSelect: document.getElementById("formatSelect"),
   canvasSizeSelect: document.getElementById("canvasSizeSelect"),
   previewWrap: document.getElementById("previewWrap"),
+  canvasCustomInputs: document.getElementById("canvasCustomInputs"),
+  canvasCustomWidth: document.getElementById("canvasCustomWidth"),
+  canvasCustomHeight: document.getElementById("canvasCustomHeight"),
   currentTimeLabel: document.getElementById("currentTimeLabel"),
   totalTimeLabel: document.getElementById("totalTimeLabel"),
   previewCanvas: document.getElementById("previewCanvas"),
@@ -474,15 +483,84 @@ function updatePreview(sec) {
 // プレビューcanvasの内部解像度 = 書き出す動画の解像度。位置(position)・大きさ(scale)は
 // 画面に対する相対値で持っているので、サイズを切り替えても配置の比率は崩れない。
 
-function applyCanvasSize(key) {
-  const preset = CANVAS_PRESETS[key] || CANVAS_PRESETS[DEFAULT_CANVAS_PRESET];
-  el.previewCanvas.width = preset.w;
-  el.previewCanvas.height = preset.h;
-  // プレビュー枠は縦横比を合わせ、高さがPREVIEW_MAX_HEIGHT_PXを超えないようにする
-  // (縦長にした時に画面が縦に伸びすぎないようにするため)
-  el.previewWrap.style.aspectRatio = `${preset.w} / ${preset.h}`;
-  el.previewWrap.style.width = `min(100%, ${Math.round((PREVIEW_MAX_HEIGHT_PX * preset.w) / preset.h)}px)`;
+function applyCanvasSize(w, h) {
+  el.previewCanvas.width = w;
+  el.previewCanvas.height = h;
+  fitPreviewWrap();
   updatePreview(state.playheadSec);
+}
+
+// プレビュー枠の表示サイズを、画面サイズの縦横比を保ったまま、使える範囲いっぱいに合わせる。
+// 使える高さ = 窓の高さのうち、下のタイムライン用(EDITOR_MIN_HEIGHT_RATIO)・上のツールバー・
+// お知らせ欄・「プレビュー」見出しを除いた残り。窓の大きさが変わった時にも呼び直す。
+function fitPreviewWrap() {
+  const panel = el.previewWrap.parentElement;
+  const panelStyle = getComputedStyle(panel);
+  const title = panel.querySelector(".preview-title");
+  const usedAbove =
+    document.querySelector(".topbar").offsetHeight +
+    el.status.offsetHeight +
+    (title ? title.offsetHeight + (parseFloat(panelStyle.rowGap) || 0) : 0) +
+    parseFloat(panelStyle.paddingTop) +
+    parseFloat(panelStyle.paddingBottom);
+  const availH = Math.min(PREVIEW_MAX_HEIGHT_PX, window.innerHeight * (1 - EDITOR_MIN_HEIGHT_RATIO) - usedAbove);
+  const availW = Math.min(
+    PREVIEW_MAX_WIDTH_PX,
+    panel.clientWidth - parseFloat(panelStyle.paddingLeft) - parseFloat(panelStyle.paddingRight)
+  );
+  const w = el.previewCanvas.width;
+  const h = el.previewCanvas.height;
+  const scale = Math.max(0, Math.min(availW / w, availH / h));
+  el.previewWrap.style.width = `${Math.floor(w * scale)}px`;
+  el.previewWrap.style.height = `${Math.floor(h * scale)}px`;
+}
+
+window.addEventListener("resize", () => {
+  fitPreviewWrap();
+  updatePreview(state.playheadSec); // 選択枠・ハンドルの太さは表示サイズに合わせて描くため描き直す
+});
+
+// カスタムで入力された幅・高さを、MIN〜MAX_CANVAS_SIDEの範囲の偶数にする。
+// 数値でない場合はfallback(今のサイズ)を使う。サーバー側(app.pyの_normalize_canvas_side)と同じ計算。
+function normalizeCanvasSide(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || value === "") return fallback;
+  const clamped = Math.max(MIN_CANVAS_SIDE, Math.min(MAX_CANVAS_SIDE, n));
+  return Math.floor(clamped / 2) * 2;
+}
+
+function applyCustomCanvasInputs() {
+  const rawW = el.canvasCustomWidth.value;
+  const rawH = el.canvasCustomHeight.value;
+  const w = normalizeCanvasSide(rawW, el.previewCanvas.width);
+  const h = normalizeCanvasSide(rawH, el.previewCanvas.height);
+  // 丸めた結果を入力欄に書き戻し、実際に使われるサイズが分かるようにする
+  el.canvasCustomWidth.value = w;
+  el.canvasCustomHeight.value = h;
+  applyCanvasSize(w, h);
+  if (String(w) !== rawW || String(h) !== rawH) {
+    setStatus(
+      `画面サイズを ${w}×${h} に調整しました(幅・高さは${MIN_CANVAS_SIDE}〜${MAX_CANVAS_SIDE}pxの偶数で指定できます)`
+    );
+  } else {
+    setStatus(`画面サイズを ${w}×${h} にしました`);
+  }
+}
+
+function onCanvasSizeSelectChange() {
+  const key = el.canvasSizeSelect.value;
+  const isCustom = key === CUSTOM_CANVAS_KEY;
+  el.canvasCustomInputs.classList.toggle("hidden", !isCustom);
+  if (isCustom) {
+    // 入力欄の初期値は今のサイズ(プリセットからそのまま微調整できるように)
+    el.canvasCustomWidth.value = el.previewCanvas.width;
+    el.canvasCustomHeight.value = el.previewCanvas.height;
+    applyCustomCanvasInputs();
+    el.canvasCustomWidth.focus();
+    return;
+  }
+  const preset = CANVAS_PRESETS[key] || CANVAS_PRESETS[DEFAULT_CANVAS_PRESET];
+  applyCanvasSize(preset.w, preset.h);
 }
 
 for (const [key, preset] of Object.entries(CANVAS_PRESETS)) {
@@ -491,8 +569,20 @@ for (const [key, preset] of Object.entries(CANVAS_PRESETS)) {
   opt.textContent = preset.label;
   el.canvasSizeSelect.appendChild(opt);
 }
+{
+  const opt = document.createElement("option");
+  opt.value = CUSTOM_CANVAS_KEY;
+  opt.textContent = "カスタム(サイズを指定)";
+  el.canvasSizeSelect.appendChild(opt);
+}
 el.canvasSizeSelect.value = DEFAULT_CANVAS_PRESET;
-el.canvasSizeSelect.addEventListener("change", () => applyCanvasSize(el.canvasSizeSelect.value));
+el.canvasSizeSelect.addEventListener("change", onCanvasSizeSelectChange);
+for (const input of [el.canvasCustomWidth, el.canvasCustomHeight]) {
+  input.min = MIN_CANVAS_SIDE;
+  input.max = MAX_CANVAS_SIDE;
+  // changeはEnterキーを押した時・フォーカスが外れた時に発生する
+  input.addEventListener("change", applyCustomCanvasInputs);
+}
 
 // ---------- プレビュー画面でのドラッグ配置・拡大縮小 ----------
 // 一般的な動画編集ソフトと同様、テキスト・画像・動画クリップをプレビュー画面上で直接
@@ -2201,5 +2291,5 @@ el.settingsClearBtn.addEventListener("click", () => {
 
 // 初期描画: 最初から空のオーバーレイを1つ用意しておく
 state.tracks.push(newOverlayTrack());
-applyCanvasSize(el.canvasSizeSelect.value);
+onCanvasSizeSelectChange();
 renderAll();

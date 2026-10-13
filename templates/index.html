@@ -26,6 +26,13 @@
       <span class="spacer"></span>
       <!-- 選択肢はscript.jsのCANVAS_PRESETSから作る -->
       <select id="canvasSizeSelect" class="select" title="プレビューと書き出す動画の画面サイズ"></select>
+      <!-- 「カスタム」を選んだ時だけ表示する。範囲(min/max)はscript.jsで設定する -->
+      <span id="canvasCustomInputs" class="canvas-custom hidden">
+        <input id="canvasCustomWidth" type="number" class="select canvas-custom-input" step="2" title="幅(px)">
+        ×
+        <input id="canvasCustomHeight" type="number" class="select canvas-custom-input" step="2" title="高さ(px)">
+        px
+      </span>
       <select id="formatSelect" class="select">
         <option value="mp4">MP4（動画）</option>
         <option value="wav">WAV（音声のみ）</option>

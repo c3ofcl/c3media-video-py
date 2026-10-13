@@ -58,7 +58,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **書き出し**（`app.py`）:
 - 音声（wav/mp3）: `build_audio_segments` が音声クリップと動画クリップに埋め込まれた音声を集め、`mix_audio_segments` がすべてを最大のサンプリングレートに揃えてから無音の上に重ねる。
-- 動画（mp4）: フロントエンドで選んだ画面サイズ（`canvasWidth/canvasHeight`。`ALLOWED_CANVAS_SIZES` のいずれか、既定 1280×720）・30fps の黒キャンバス上に moviepy の `CompositeVideoClip` で合成する。画像・動画クリップはトラック順のまま `_fit_and_place` で `position`/`scale` に従って配置し、テキストクリップはトラックに関係なく常に最前面に置く。ミックスした音声を付けて書き出す。再生互換性のため `-movflags +faststart -pix_fmt yuv420p` を指定してエンコードしている。
+- 動画（mp4）: フロントエンドで選んだ画面サイズ（`canvasWidth/canvasHeight`。プリセットまたはカスタム指定で、`_normalize_canvas_side` が `MIN/MAX_CANVAS_SIDE`（240〜1920）の偶数に丸める。指定がなければ 1920×1080）・30fps の黒キャンバス上に moviepy の `CompositeVideoClip` で合成する。画像・動画クリップはトラック順のまま `_fit_and_place` で `position`/`scale` に従って配置し、テキストクリップはトラックに関係なく常に最前面に置く。ミックスした音声を付けて書き出す。再生互換性のため `-movflags +faststart -pix_fmt yuv420p` を指定してエンコードしている。
 - 出力は `exports/` に保存される。フロントエンドはそれをダウンロードした後、`DELETE /api/exports/<name>` を呼んで削除する。
 
 **プレビュー／再生**（フロントエンド）: 音声クリップは Web Audio API で再生し、再生ヘッド位置の画像・動画フレームとテキストは `<canvas>` に描画する（`updatePreview`）。canvas の内部解像度 = 書き出す動画の解像度（`applyCanvasSize`）。重なり順を保つため描画は毎回同期的に1回で行い、未読込の画像や停止中の動画のシークは、完了時（`img.onload`・`loadeddata`・`seeked`）にプレビュー全体を描き直す。再生中は表示中の動画クリップごとに `<video>` を `play()` させる（`state.playingVideos`）。動画クリップに埋め込まれた音声はプレビューでは意図的に再生しない（書き出しには含まれる）。
@@ -67,7 +67,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 同期を保つ必要があるもの
 - **テキスト描画の定数とフォント**は、プレビューと書き出しの見た目を一致させるため `app.py` と `static/script.js` の両方に重複して定義されている: `FONT_REGISTRY` のキー、`DEFAULT/MIN/MAX_TEXT_FONT_SIZE`、`TEXT_MARGIN_PX`、`TEXT_MAX_WIDTH_RATIO`、`DEFAULT_TEXT_POSITION`、およびテキストの折り返し処理（`_wrap_text_to_width` と `wrapTextToWidth` の両方で 1 文字単位）。フォントを追加するときは、`static/fonts/` への TTF 配置、`style.css` への `@font-face` 追加、両方のレジストリへの登録がすべて必要。可変フォントは一部の Pillow/FreeType 環境で読み込みに失敗するため、静的な TTF を使うこと（`static/fonts/README.md` 参照）。
-- **画面サイズと配置の定数**も両方に重複している: 画面サイズの候補（`script.js` の `CANVAS_PRESETS` と `app.py` の `ALLOWED_CANVAS_SIZES`。`app.py` 側にないサイズは 1280×720 で書き出される）、`MIN/MAX_MEDIA_SCALE`、`TEXT_REFERENCE_SHORT_SIDE`、および配置の計算（`mediaRect` と `_fit_and_place`）。
+- **画面サイズと配置の定数**も両方に重複している: 画面サイズの範囲と丸め方（`MIN/MAX_CANVAS_SIDE`、`normalizeCanvasSide` と `_normalize_canvas_side`。プリセットは `script.js` の `CANVAS_PRESETS` のみにある）、`MIN/MAX_MEDIA_SCALE`、`TEXT_REFERENCE_SHORT_SIDE`、および配置の計算（`mediaRect` と `_fit_and_place`）。
 - `script.js` の `PX_PER_SEC` は `style.css` の `--px-per-sec` と一致させること。
 - アップロードされた画像は、EXIF の向き情報をピクセルデータに焼き込んで保存し直している（`_normalize_image_orientation`）。ブラウザは EXIF を反映するが、moviepy は EXIF を無視するため。
 

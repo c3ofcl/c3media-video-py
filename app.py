@@ -66,12 +66,14 @@ DEFAULT_IMAGE_DURATION_SEC = 5.0
 MAX_IMAGE_DURATION_SEC = 600.0
 
 # 動画書き出し時のキャンバスサイズとフレームレート。
-# キャンバスサイズはフロントエンドで選んだもの(ALLOWED_CANVAS_SIZESのいずれか)を使い、
-# 指定が無い・不正な場合はVIDEO_CANVAS_SIZEにする。script.jsのCANVAS_PRESETSと揃えること。
+# キャンバスサイズはフロントエンドで選んだもの(プリセットまたはカスタム指定)を使い、
+# 幅・高さはMIN〜MAX_CANVAS_SIDEの偶数に収める(H.264(yuv420p)は奇数サイズを扱えないため)。
+# 指定が無い・数値でない場合はVIDEO_CANVAS_SIZEにする。script.jsのMIN/MAX_CANVAS_SIDEと揃えること。
 # 各画像・動画はscale=1の時、アスペクト比を保ったままキャンバスに収まる大きさになり
 # (レターボックス)、余白は黒で埋める。
-VIDEO_CANVAS_SIZE = (1280, 720)
-ALLOWED_CANVAS_SIZES = {(1280, 720), (1920, 1080), (1080, 1920), (1080, 1080)}
+VIDEO_CANVAS_SIZE = (1920, 1080)
+MIN_CANVAS_SIDE = 240
+MAX_CANVAS_SIDE = 1920
 VIDEO_FPS = 30
 
 # 画像・動画クリップの大きさ(scale)の範囲と、初期位置(中心点の相対座標)。
@@ -109,6 +111,12 @@ TEXT_REFERENCE_SHORT_SIDE = 720
 def _font_path(font_key):
     filename = FONT_REGISTRY.get(font_key) or FONT_REGISTRY[DEFAULT_FONT_KEY]
     return os.path.join(FONTS_DIR, filename)
+
+
+def _normalize_canvas_side(value):
+    """キャンバスの幅・高さを、MIN〜MAX_CANVAS_SIDEの範囲の偶数にする(script.jsのnormalizeCanvasSideと同じ計算)"""
+    v = max(MIN_CANVAS_SIDE, min(MAX_CANVAS_SIDE, float(value)))
+    return int(v // 2 * 2)
 
 
 def _text_scale(canvas_w, canvas_h):
@@ -775,8 +783,8 @@ def export():
     リクエストJSON形式:
     {
       "format": "wav" | "mp3" | "mp4",
-      "canvasWidth": 1280,       # 動画の画面サイズ(ALLOWED_CANVAS_SIZESのいずれか。mp4のみ使用)
-      "canvasHeight": 720,
+      "canvasWidth": 1920,       # 動画の画面サイズ(mp4のみ使用)。MIN〜MAX_CANVAS_SIDEの偶数に丸めて使う
+      "canvasHeight": 1080,
       "clips": [
         {
           "fileId": "...",
@@ -817,10 +825,11 @@ def export():
 
     if fmt == "mp4":
         try:
-            canvas_size = (int(data.get("canvasWidth")), int(data.get("canvasHeight")))
-        except (TypeError, ValueError):
-            canvas_size = VIDEO_CANVAS_SIZE
-        if canvas_size not in ALLOWED_CANVAS_SIZES:
+            canvas_size = (
+                _normalize_canvas_side(data.get("canvasWidth")),
+                _normalize_canvas_side(data.get("canvasHeight")),
+            )
+        except (TypeError, ValueError, OverflowError):
             canvas_size = VIDEO_CANVAS_SIZE
         return export_video(clips, canvas_size)
     return export_audio(clips, fmt)
