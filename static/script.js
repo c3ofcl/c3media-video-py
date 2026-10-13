@@ -2293,3 +2293,9 @@ el.settingsClearBtn.addEventListener("click", () => {
 state.tracks.push(newOverlayTrack());
 onCanvasSizeSelectChange();
 renderAll();
+
+// ブラウザのリロード保護プログラム
+window.addEventListener('beforeunload',(event) => {
+  event.preventDefault(); //一般ブラウザ用
+  event.returnValue = ''; //旧ブラウザ用
+});
