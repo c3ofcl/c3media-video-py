@@ -80,6 +80,16 @@
     <p id="aiPanelHint" class="ai-panel-hint"></p>
     <textarea id="aiPanelPrompt" class="ai-panel-textarea" rows="3"
       placeholder="プロンプトを入力(例:家で寝転がる黒猫)"></textarea>
+    <!-- モデル・解像度の選択肢はscript.jsのAI_MODELSから作る -->
+    <div id="aiPanelModelRow" class="ai-panel-row stacked">
+      <label class="settings-label" for="aiPanelModel">モデル</label>
+      <select id="aiPanelModel" class="select"></select>
+      <p class="ai-panel-hint ai-panel-model-hint">「有料プランのみ」のモデル・解像度は、Magic Hourの無料プランでは使えません。</p>
+    </div>
+    <div id="aiPanelResolutionRow" class="ai-panel-row hidden">
+      <label class="settings-label" for="aiPanelResolution">解像度</label>
+      <select id="aiPanelResolution" class="select"></select>
+    </div>
     <div id="aiPanelAspectRow" class="ai-panel-row hidden">
       <label class="settings-label" for="aiPanelAspectRatio">縦横比</label>
       <select id="aiPanelAspectRatio" class="select"></select>

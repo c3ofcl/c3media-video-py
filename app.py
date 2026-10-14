@@ -34,6 +34,7 @@
 
 import math
 import os
+import re
 import uuid
 
 from dotenv import load_dotenv, set_key, unset_key
@@ -321,6 +322,21 @@ def set_magic_hour_key():
     return jsonify({"ok": True, "configured": bool(key)})
 
 
+_SAFE_OPTION_RE = re.compile(r"^[a-z0-9.\-]{1,40}$")
+
+
+def _safe_option(value):
+    """
+    モデル名・解像度などの選択肢の値を検証する。英小文字・数字・「.」「-」だけの40文字以内なら
+    そのまま返し、それ以外(未指定を含む)はNone(=Magic Hour側の既定)にする。
+    どのモデルが有効かはMagic Hour側が検証するので、ここでは一覧を持たない
+    (一覧はフロントエンドのscript.jsのAI_MODELSにある)。
+    """
+    if isinstance(value, str) and _SAFE_OPTION_RE.match(value):
+        return value
+    return None
+
+
 @app.route("/api/ai/generate-new-image", methods=["POST"])
 def ai_generate_new_image():
     """
@@ -328,7 +344,7 @@ def ai_generate_new_image():
     プロンプトだけから新しい画像を生成する。何もない位置にタイムライン上のクリップとして
     追加する用途を想定しているため、通常アップロードと同じ形式のJSON(kind: "image")を返す。
 
-    リクエストJSON: { prompt, aspectRatio? }
+    リクエストJSON: { prompt, aspectRatio?, model? }
     """
     data = request.get_json(force=True, silent=True) or {}
     prompt = (data.get("prompt") or "").strip()
@@ -343,6 +359,7 @@ def ai_generate_new_image():
         magic_hour_client.generate_image(
             prompt,
             out_path,
+            model=_safe_option(data.get("model")),
             aspect_ratio=data.get("aspectRatio") or None,
         )
     except magic_hour_client.MagicHourError as e:
@@ -383,9 +400,9 @@ def ai_generate_image():
             src_path,
             prompt,
             out_path,
-            model=data.get("model") or None,
+            model=_safe_option(data.get("model")),
             aspect_ratio=data.get("aspectRatio") or None,
-            resolution=data.get("resolution") or None,
+            resolution=_safe_option(data.get("resolution")),
         )
     except magic_hour_client.MagicHourError as e:
         return jsonify({"error": str(e)}), 502
@@ -401,7 +418,9 @@ def ai_image_to_video():
     指定秒数の動画を生成し、結果を新しい動画アセットとして保存する。
     通常アップロードと同じ形式のJSONを返す(kind: "video")。
 
-    リクエストJSON: { baseFileId, baseExt, endSeconds, prompt? }
+    リクエストJSON: { baseFileId, baseExt, endSeconds, prompt?, model?, resolution? }
+    model / resolution を省略するとMagic Hour側の既定になる(フロントエンドからは常に指定する。
+    既定の選択肢は最安のltx-2.5・480p)。
     endSecondsは呼び出し側(フロントエンド)で、元にする画像クリップの
     タイムライン上の長さに合わせて渡す想定。
     """
@@ -432,6 +451,8 @@ def ai_image_to_video():
             src_path,
             end_seconds,
             out_path,
+            model=_safe_option(data.get("model")),
+            resolution=_safe_option(data.get("resolution")),
             prompt=data.get("prompt") or None,
         )
     except magic_hour_client.MagicHourError as e:

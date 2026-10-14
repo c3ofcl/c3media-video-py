@@ -499,6 +499,19 @@ body {
 .ai-panel-row .select {
   flex-shrink: 0;
 }
+/* モデル選択のように選択肢の文が長い行は、ラベルを上に置き、選択欄を幅いっぱいに広げる */
+.ai-panel-row.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.ai-panel-row.stacked .select {
+  width: 100%;
+}
+.ai-panel-model-hint {
+  margin: 0;
+  font-size: 11px;
+}
 
 .ai-panel-footer {
   display: flex;

@@ -101,6 +101,9 @@ const el = {
   aiPanelHint: document.getElementById("aiPanelHint"),
   aiPanelAspectRow: document.getElementById("aiPanelAspectRow"),
   aiPanelAspectRatio: document.getElementById("aiPanelAspectRatio"),
+  aiPanelModel: document.getElementById("aiPanelModel"),
+  aiPanelResolutionRow: document.getElementById("aiPanelResolutionRow"),
+  aiPanelResolution: document.getElementById("aiPanelResolution"),
   aiPanelPrompt: document.getElementById("aiPanelPrompt"),
   aiPanelCloseBtn: document.getElementById("aiPanelCloseBtn"),
   aiPanelSubmitBtn: document.getElementById("aiPanelSubmitBtn"),
@@ -1698,6 +1701,154 @@ let aiPanelTargetClipId = null;       // "video" / "image" モード: 対象ク�
 let aiPanelTargetTrackId = null;      // "new" モード: 追加先トラック(nullなら新規トラックを作る)
 let aiPanelTargetTimelineStart = 0;   // "new" モード: タイムライン上の追加位置(秒)
 
+// ---------- AI生成のモデル一覧 ----------
+// Magic Hourの公式ドキュメント(docs.magichour.ai、2026-10時点)を元にした一覧。Magic Hour側で
+// モデルの追加・廃止や料金の変更があった場合は、ここを手で更新する(サーバー側には一覧を持たない)。
+// 各リストの先頭が既定(なるべく速く・クレジット消費が少なく、無料プランでも使えるもの)。
+// paid: true は、公式ドキュメント上「有料プランのみ」のモデル(無料プランで選ぶとMagic Hour側でエラーになる)。
+// 動画の解像度は、無料プランでは480pのみ使える。
+
+// 範囲[min, max]の整数秒と、個別の秒数をまとめて「対応している秒数か」を判定する関数を作る
+function secondsSpec(ranges, extras = []) {
+  return (sec) => extras.includes(sec) || ranges.some(([min, max]) => sec >= min && sec <= max);
+}
+const VEO_SECONDS = [4, 6, 8, 16, 24, 32, 40, 48, 56];
+
+const AI_MODELS = {
+  // 新規画像生成(AI Image Generator)
+  new: [
+    { value: "flux-schnell", label: "Flux Schnell", note: "最速・最安" },
+    { value: "z-image-turbo", label: "Z-Image Turbo", note: "低コスト" },
+    { value: "flux-2-klein", label: "Flux 2 Klein", note: "高速" },
+    { value: "qwen-image-2.1", label: "Qwen Image 2.1", note: "手頃な価格" },
+    { value: "krea-2", label: "Krea 2", note: "標準・1kまで" },
+    { value: "seedream-v4", label: "Seedream v4", note: "中品質", paid: true },
+    { value: "nano-banana", label: "Nano Banana", note: "標準品質", paid: true },
+    { value: "nano-banana-2-lite", label: "Nano Banana 2 Lite", note: "軽量版", paid: true },
+    { value: "nano-banana-2.1", label: "Nano Banana 2.1", note: "4k対応", paid: true },
+    { value: "gpt-image-2", label: "GPT Image 2", note: "高品質", paid: true },
+    { value: "seedream-v5-pro", label: "Seedream v5 Pro", note: "品質重視", paid: true },
+    { value: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare", note: "最高品質クラス", paid: true },
+    { value: "nano-banana-pro", label: "Nano Banana Pro", note: "プレミアム・最も高価", paid: true },
+  ],
+  // 既存画像の編集(AI Image Editor)
+  image: [
+    { value: "flux-2-klein", label: "Flux 2 Klein", note: "最速・最安" },
+    { value: "qwen-image-2.1", label: "Qwen Image 2.1", note: "手頃な価格" },
+    { value: "qwen-edit", label: "Qwen Edit", note: "編集向け" },
+    { value: "krea-2", label: "Krea 2", note: "標準・1kまで" },
+    { value: "seedream-v4", label: "Seedream v4", note: "中品質", paid: true },
+    { value: "nano-banana", label: "Nano Banana", note: "標準品質", paid: true },
+    { value: "nano-banana-2-lite", label: "Nano Banana 2 Lite", note: "軽量版", paid: true },
+    { value: "nano-banana-2.1", label: "Nano Banana 2.1", note: "4k対応", paid: true },
+    { value: "seedream-v4.5", label: "Seedream v4.5", note: "高品質・4k対応", paid: true },
+    { value: "gpt-image-2", label: "GPT Image 2", note: "高品質", paid: true },
+    { value: "seedream-v5-pro", label: "Seedream v5 Pro", note: "品質重視", paid: true },
+    { value: "nano-banana-2", label: "Nano Banana 2", note: "高品質・4k対応", paid: true },
+    { value: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare", note: "最高品質クラス", paid: true },
+    { value: "nano-banana-pro", label: "Nano Banana Pro", note: "プレミアム・最も高価", paid: true },
+  ],
+  // 画像 -> 動画生成(Image-to-Video)。seconds: 対応秒数の判定、resolutions: 対応解像度(低い順)
+  video: [
+    {
+      value: "ltx-2.5", label: "LTX 2.5", note: "最速・最安・長尺OK",
+      seconds: secondsSpec([[1, 60]]), resolutions: ["480p", "720p", "1080p"],
+    },
+    {
+      value: "minimax-h3", label: "MiniMax H3", note: "低コスト・参照に忠実",
+      seconds: secondsSpec([[1, 30]]), resolutions: ["480p", "720p", "1080p"],
+    },
+    {
+      value: "seedance-2.0-mini", label: "Seedance 2.0 Mini", note: "高速・低コスト・安定した動き", paid: true,
+      seconds: secondsSpec([[4, 15]]), resolutions: ["480p", "720p"],
+    },
+    {
+      value: "wan-2.2", label: "Wan 2.2", note: "物理的な動き・カメラワーク", paid: true,
+      seconds: secondsSpec([[3, 10]], [15]), resolutions: ["480p", "720p", "1080p"],
+    },
+    {
+      value: "wan-3.0", label: "Wan 3.0", note: "高品質・長めの動画", paid: true,
+      seconds: secondsSpec([[2, 10]], [15, 20, 25, 30]), resolutions: ["480p", "720p", "1080p"],
+    },
+    {
+      value: "seedance-1.5", label: "Seedance 1.5", note: "なめらかで一貫した動き", paid: true,
+      seconds: secondsSpec([[4, 12]]), resolutions: ["480p", "720p", "1080p"],
+    },
+    {
+      value: "seedance-2.0", label: "Seedance 2.0", note: "被写体を正確にコントロール", paid: true,
+      seconds: secondsSpec([[4, 15]]), resolutions: ["480p", "720p", "1080p", "4k"],
+    },
+    {
+      value: "kling-2.6", label: "Kling 2.6", note: "アクション・カメラ移動", paid: true,
+      seconds: secondsSpec([], [5, 10]), resolutions: ["720p", "1080p"],
+    },
+    {
+      value: "kling-3.0", label: "Kling 3.0", note: "映画的な表現", paid: true,
+      seconds: secondsSpec([[3, 10]]), resolutions: ["720p", "1080p", "4k"],
+    },
+    {
+      value: "gemini-omni-1.1", label: "Gemini Omni 1.1", note: "短く正確なクリップ・高解像度", paid: true,
+      seconds: secondsSpec([[3, 10]]), resolutions: ["360p", "720p", "1080p", "4k"],
+    },
+    {
+      value: "veo3.1-lite", label: "Veo 3.1 Lite", note: "リアルさと価格のバランス", paid: true,
+      seconds: secondsSpec([], VEO_SECONDS), resolutions: ["720p", "1080p"],
+    },
+    {
+      value: "veo3.1", label: "Veo 3.1", note: "表情豊かな動き・人物のやり取り", paid: true,
+      seconds: secondsSpec([], VEO_SECONDS), resolutions: ["720p", "1080p"],
+    },
+    {
+      value: "seedance-2.5", label: "Seedance 2.5", note: "リアル・高精細・高価", paid: true,
+      seconds: secondsSpec([[4, 30]]), resolutions: ["480p", "720p", "1080p"],
+    },
+  ],
+};
+
+// パネルの種類("new" / "image" / "video")ごとに、前回選んだモデルを覚えておく
+const lastSelectedModel = {};
+
+// モデルの選択欄を作り直す。動画モードでは、クリップの長さ(秒)に対応していないモデルを選べなくする。
+function populateModelSelect(mode, clipDurationSec) {
+  const select = el.aiPanelModel;
+  select.innerHTML = "";
+  const models = AI_MODELS[mode] || [];
+  for (const m of models) {
+    const opt = document.createElement("option");
+    opt.value = m.value;
+    const unsupported = mode === "video" && m.seconds && !m.seconds(clipDurationSec);
+    opt.disabled = unsupported;
+    opt.textContent =
+      `${m.label} — ${m.note}` +
+      (m.paid ? "(有料プランのみ)" : "") +
+      (unsupported ? `(${clipDurationSec}秒は非対応)` : "");
+    select.appendChild(opt);
+  }
+  const remembered = Array.from(select.options).find((o) => o.value === lastSelectedModel[mode] && !o.disabled);
+  const firstEnabled = Array.from(select.options).find((o) => !o.disabled);
+  select.value = (remembered || firstEnabled || { value: "" }).value;
+  if (mode === "video") populateVideoResolutionSelect(select.value);
+}
+
+// 動画の解像度の選択欄を、選んだモデルが対応する解像度だけで作り直す。既定は一番低い(=最安の)解像度。
+// 無料プランでも使えるモデルでは、無料プランで使えない解像度(480p以外)に「有料プランのみ」と付ける。
+function populateVideoResolutionSelect(modelValue) {
+  const select = el.aiPanelResolution;
+  select.innerHTML = "";
+  const model = AI_MODELS.video.find((m) => m.value === modelValue);
+  for (const r of model ? model.resolutions : []) {
+    const opt = document.createElement("option");
+    opt.value = r;
+    opt.textContent = r + (!model.paid && r !== "480p" ? "(有料プランのみ)" : "");
+    select.appendChild(opt);
+  }
+}
+
+el.aiPanelModel.addEventListener("change", () => {
+  if (aiPanelMode) lastSelectedModel[aiPanelMode] = el.aiPanelModel.value;
+  if (aiPanelMode === "video") populateVideoResolutionSelect(el.aiPanelModel.value);
+});
+
 function closeClipContextMenu() {
   el.clipContextMenu.classList.add("hidden");
 }
@@ -1798,6 +1949,8 @@ function openAiPanel(mode, ctx, anchorX, anchorY) {
       `長さ: ${dur}秒(このクリップのタイムライン上の長さに合わせます)。`;
     el.aiPanelPrompt.placeholder = "動きの指示(任意) 例: 家で寝転がる黒猫";
     el.aiPanelAspectRow.classList.add("hidden");
+    populateModelSelect("video", dur);
+    el.aiPanelResolutionRow.classList.remove("hidden");
   } else if (mode === "image") {
     aiPanelTargetClipId = ctx.clip.clipId;
     el.aiPanelTitle.textContent = "✨ この画像を基に新規生成";
@@ -1805,6 +1958,8 @@ function openAiPanel(mode, ctx, anchorX, anchorY) {
     el.aiPanelPrompt.placeholder = "編集内容を入力(例: 背景を夕焼けの空に変更して)";
     populateAspectRatioSelect("image");
     el.aiPanelAspectRow.classList.remove("hidden");
+    populateModelSelect("image");
+    el.aiPanelResolutionRow.classList.add("hidden");
   } else {
     // "new": 元になる画像は無く、プロンプトだけから新しい画像を生成する
     aiPanelTargetTrackId = ctx.trackId;
@@ -1814,6 +1969,8 @@ function openAiPanel(mode, ctx, anchorX, anchorY) {
     el.aiPanelPrompt.placeholder = "画像の内容を入力(例: 夕焼けの海辺で鳴く猫)";
     populateAspectRatioSelect("new");
     el.aiPanelAspectRow.classList.remove("hidden");
+    populateModelSelect("new");
+    el.aiPanelResolutionRow.classList.add("hidden");
   }
 
   el.aiActionPanel.classList.remove("hidden");
@@ -1917,6 +2074,8 @@ el.aiPanelSubmitBtn.addEventListener("click", async () => {
           baseExt: clip.ext,
           endSeconds,
           prompt: prompt || undefined,
+          model: el.aiPanelModel.value || undefined,
+          resolution: el.aiPanelResolution.value || undefined,
         }),
       });
       const data = await res.json();
@@ -1932,6 +2091,7 @@ el.aiPanelSubmitBtn.addEventListener("click", async () => {
           baseExt: clip.ext,
           prompt,
           aspectRatio: el.aiPanelAspectRatio.value || undefined,
+          model: el.aiPanelModel.value || undefined,
         }),
       });
       const data = await res.json();
@@ -1942,7 +2102,11 @@ el.aiPanelSubmitBtn.addEventListener("click", async () => {
       const res = await fetch("/api/ai/generate-new-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, aspectRatio: el.aiPanelAspectRatio.value || undefined }),
+        body: JSON.stringify({
+          prompt,
+          aspectRatio: el.aiPanelAspectRatio.value || undefined,
+          model: el.aiPanelModel.value || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "画像の生成に失敗しました");
