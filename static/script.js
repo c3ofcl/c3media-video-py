@@ -102,6 +102,7 @@ const el = {
   aiPanelAspectRow: document.getElementById("aiPanelAspectRow"),
   aiPanelAspectRatio: document.getElementById("aiPanelAspectRatio"),
   aiPanelModel: document.getElementById("aiPanelModel"),
+  aiPanelModelNote: document.getElementById("aiPanelModelNote"),
   aiPanelResolutionRow: document.getElementById("aiPanelResolutionRow"),
   aiPanelResolution: document.getElementById("aiPanelResolution"),
   aiPanelPrompt: document.getElementById("aiPanelPrompt"),
@@ -1707,6 +1708,9 @@ let aiPanelTargetTimelineStart = 0;   // "new" モード: タイムライン上�
 // 各リストの先頭が既定(なるべく速く・クレジット消費が少なく、無料プランでも使えるもの)。
 // paid: true は、公式ドキュメント上「有料プランのみ」のモデル(無料プランで選ぶとMagic Hour側でエラーになる)。
 // 動画の解像度は、無料プランでは480pのみ使える。
+// noteの得意分野(実写・文字入れなど)は、各モデルの開発元・提供元の公開情報に基づく目安。
+// Flux Schnellは英語向けの文章理解部品(T5)を使っているため、日本語のプロンプトだと意図と
+// 違う画像になりやすい(例: 「黒猫」でアニメ風の人物が出る)。そのため新規画像の既定はZ-Image Turboにしている。
 
 // 範囲[min, max]の整数秒と、個別の秒数をまとめて「対応している秒数か」を判定する関数を作る
 function secondsSpec(ranges, extras = []) {
@@ -1717,36 +1721,36 @@ const VEO_SECONDS = [4, 6, 8, 16, 24, 32, 40, 48, 56];
 const AI_MODELS = {
   // 新規画像生成(AI Image Generator)
   new: [
-    { value: "flux-schnell", label: "Flux Schnell", note: "最速・最安" },
-    { value: "z-image-turbo", label: "Z-Image Turbo", note: "低コスト" },
-    { value: "flux-2-klein", label: "Flux 2 Klein", note: "高速" },
-    { value: "qwen-image-2.1", label: "Qwen Image 2.1", note: "手頃な価格" },
-    { value: "krea-2", label: "Krea 2", note: "標準・1kまで" },
-    { value: "seedream-v4", label: "Seedream v4", note: "中品質", paid: true },
-    { value: "nano-banana", label: "Nano Banana", note: "標準品質", paid: true },
-    { value: "nano-banana-2-lite", label: "Nano Banana 2 Lite", note: "軽量版", paid: true },
-    { value: "nano-banana-2.1", label: "Nano Banana 2.1", note: "4k対応", paid: true },
-    { value: "gpt-image-2", label: "GPT Image 2", note: "高品質", paid: true },
-    { value: "seedream-v5-pro", label: "Seedream v5 Pro", note: "品質重視", paid: true },
-    { value: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare", note: "最高品質クラス", paid: true },
-    { value: "nano-banana-pro", label: "Nano Banana Pro", note: "プレミアム・最も高価", paid: true },
+    { value: "z-image-turbo", label: "Z-Image Turbo", note: "高速・実写系が得意" },
+    { value: "flux-2-klein", label: "Flux 2 Klein", note: "高速・実写〜アニメまで幅広い・日本語の指示も理解しやすい" },
+    { value: "flux-schnell", label: "Flux Schnell", note: "最速・英語プロンプト向け(日本語は誤解しやすい)" },
+    { value: "qwen-image-2.1", label: "Qwen Image 2.1", note: "文字入れ(ポスター・看板)が得意" },
+    { value: "krea-2", label: "Krea 2", note: "実写・フィルム写真風の質感" },
+    { value: "seedream-v4", label: "Seedream v4", note: "高品質な実写・デザイン", paid: true },
+    { value: "nano-banana", label: "Nano Banana", note: "指示の理解が得意", paid: true },
+    { value: "nano-banana-2-lite", label: "Nano Banana 2 Lite", note: "Nano Bananaの軽量版", paid: true },
+    { value: "nano-banana-2.1", label: "Nano Banana 2.1", note: "高品質・4k対応", paid: true },
+    { value: "gpt-image-2", label: "GPT Image 2", note: "指示に忠実・日本語の文字入れも可", paid: true },
+    { value: "seedream-v5-pro", label: "Seedream v5 Pro", note: "高品質な実写・デザイン", paid: true },
+    { value: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare", note: "最高品質クラス・指示に忠実", paid: true },
+    { value: "nano-banana-pro", label: "Nano Banana Pro", note: "多言語の文字入れに最も強い・最高品質", paid: true },
   ],
   // 既存画像の編集(AI Image Editor)
   image: [
-    { value: "flux-2-klein", label: "Flux 2 Klein", note: "最速・最安" },
-    { value: "qwen-image-2.1", label: "Qwen Image 2.1", note: "手頃な価格" },
-    { value: "qwen-edit", label: "Qwen Edit", note: "編集向け" },
-    { value: "krea-2", label: "Krea 2", note: "標準・1kまで" },
-    { value: "seedream-v4", label: "Seedream v4", note: "中品質", paid: true },
-    { value: "nano-banana", label: "Nano Banana", note: "標準品質", paid: true },
-    { value: "nano-banana-2-lite", label: "Nano Banana 2 Lite", note: "軽量版", paid: true },
-    { value: "nano-banana-2.1", label: "Nano Banana 2.1", note: "4k対応", paid: true },
-    { value: "seedream-v4.5", label: "Seedream v4.5", note: "高品質・4k対応", paid: true },
-    { value: "gpt-image-2", label: "GPT Image 2", note: "高品質", paid: true },
-    { value: "seedream-v5-pro", label: "Seedream v5 Pro", note: "品質重視", paid: true },
-    { value: "nano-banana-2", label: "Nano Banana 2", note: "高品質・4k対応", paid: true },
+    { value: "flux-2-klein", label: "Flux 2 Klein", note: "最速・幅広い画風・指示を理解しやすい" },
+    { value: "qwen-image-2.1", label: "Qwen Image 2.1", note: "文字入れが得意" },
+    { value: "qwen-edit", label: "Qwen Edit", note: "編集向け・文字の書き換えが得意" },
+    { value: "krea-2", label: "Krea 2", note: "実写・フィルム写真風の質感" },
+    { value: "seedream-v4", label: "Seedream v4", note: "複数画像の合成・実写", paid: true },
+    { value: "nano-banana", label: "Nano Banana", note: "人物・キャラの見た目を保った編集", paid: true },
+    { value: "nano-banana-2-lite", label: "Nano Banana 2 Lite", note: "Nano Bananaの軽量版", paid: true },
+    { value: "nano-banana-2.1", label: "Nano Banana 2.1", note: "見た目を保った編集・4k対応", paid: true },
+    { value: "seedream-v4.5", label: "Seedream v4.5", note: "高品質な実写・デザイン", paid: true },
+    { value: "gpt-image-2", label: "GPT Image 2", note: "指示に忠実・日本語の文字入れも可", paid: true },
+    { value: "seedream-v5-pro", label: "Seedream v5 Pro", note: "高品質な実写・デザイン", paid: true },
+    { value: "nano-banana-2", label: "Nano Banana 2", note: "見た目を保った編集・高品質", paid: true },
     { value: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare", note: "最高品質クラス", paid: true },
-    { value: "nano-banana-pro", label: "Nano Banana Pro", note: "プレミアム・最も高価", paid: true },
+    { value: "nano-banana-pro", label: "Nano Banana Pro", note: "多言語の文字入れに最も強い・最高品質", paid: true },
   ],
   // 画像 -> 動画生成(Image-to-Video)。seconds: 対応秒数の判定、resolutions: 対応解像度(低い順)
   video: [
@@ -1827,7 +1831,14 @@ function populateModelSelect(mode, clipDurationSec) {
   const remembered = Array.from(select.options).find((o) => o.value === lastSelectedModel[mode] && !o.disabled);
   const firstEnabled = Array.from(select.options).find((o) => !o.disabled);
   select.value = (remembered || firstEnabled || { value: "" }).value;
+  updateModelNote();
   if (mode === "video") populateVideoResolutionSelect(select.value);
+}
+
+// 選択中のモデルの説明を、選択欄の下に全文で表示する(選択欄の中だと長い説明は途中で切れるため)
+function updateModelNote() {
+  const opt = el.aiPanelModel.selectedOptions[0];
+  el.aiPanelModelNote.textContent = opt ? opt.textContent.split(" — ").slice(1).join(" — ") : "";
 }
 
 // 動画の解像度の選択欄を、選んだモデルが対応する解像度だけで作り直す。既定は一番低い(=最安の)解像度。
@@ -1846,6 +1857,7 @@ function populateVideoResolutionSelect(modelValue) {
 
 el.aiPanelModel.addEventListener("change", () => {
   if (aiPanelMode) lastSelectedModel[aiPanelMode] = el.aiPanelModel.value;
+  updateModelNote();
   if (aiPanelMode === "video") populateVideoResolutionSelect(el.aiPanelModel.value);
 });
 
