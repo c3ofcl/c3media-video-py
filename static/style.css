@@ -10,6 +10,7 @@
   --accent-2: #ff8a5b;
   --track-h: 64px;
   --px-per-sec: 60px;
+  --toolbar-control-h: 28px; /* 上のツールバーのボタン・選択欄の高さ */
 }
 
 /* テキストクリップ用フォント。プレビュー(canvas)と書き出し(サーバー側のmoviepy/Pillow)の
@@ -142,6 +143,31 @@ body {
   border-radius: 6px;
   padding: 3px 4px;
   font-size: 12px;
+}
+
+/* 上のツールバーの部品(ボタン・選択欄・時間表示)は、種類によらず同じ高さに揃える。
+   ボタンとselectでは中身の高さの計算が違うため、paddingではなくheightで揃える。 */
+.topbar .btn,
+.topbar .btn-warning,
+.topbar .file-btn,
+.topbar .time-counter {
+  box-sizing: border-box;
+  height: var(--toolbar-control-h);
+  display: inline-flex;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 1;
+}
+/* inline-flexにすると「0:00 / 0:00」の空白が詰まるので、間隔はgapで付ける */
+.topbar .time-counter {
+  gap: 0.3em;
+}
+.topbar .select {
+  box-sizing: border-box;
+  height: var(--toolbar-control-h);
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /* 画面サイズ「カスタム」の幅・高さ入力欄(.hiddenより前に定義し、非表示が優先されるようにする) */
