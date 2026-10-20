@@ -2,6 +2,7 @@
   --bg: #1b1d23;
   --panel: #23262e;
   --panel-2: #2b2f3a;
+  --text-war:#ff6b6b;
   --border: #383c48;
   --text: #e7e9ee;
   --text-dim: #9aa0ad;
@@ -87,6 +88,17 @@ body {
   font-weight: 600;
 }
 
+.btn-warning {
+  background: var(--panel-2);
+  color: var(--text-war);
+  font-weight: 600;
+  border: 1px solid var(--border);
+  padding: 4px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -103,6 +115,7 @@ body {
   cursor: pointer;
   font-size: 12px;
 }
+
 .btn:hover { border-color: var(--accent); }
 .btn.primary {
   background: var(--accent);
@@ -271,8 +284,8 @@ body {
   cursor: pointer;
 }
 .track-delete-btn:hover {
-  color: #ff6b6b;
-  border-color: #ff6b6b;
+  color: var(--text-war);
+  border-color: var(--text-war);
   background: rgba(255, 107, 107, 0.1);
 }
 
