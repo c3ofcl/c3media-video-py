@@ -827,8 +827,10 @@ el.previewCanvas.addEventListener("mousemove", (e) => {
 
 el.fileInput.addEventListener("change", async (e) => {
   const files = Array.from(e.target.files || []);
+  // 選んだ時点の再生ヘッド(オレンジのバー)の位置から置く(複数選んだ場合は、それぞれ別の行に同じ位置で)
+  const timelineStart = currentPlayheadSec();
   for (const file of files) {
-    await uploadFile(file);
+    await uploadFile(file, timelineStart);
   }
   e.target.value = "";
   renderAll();
@@ -879,7 +881,8 @@ function trackDisplayLabel(track) {
   return track.clips.length > 0 ? clipDisplayName(track.clips[0]) : track.label;
 }
 
-function addTrackFromAssetResponse(data, labelOverride) {
+// timelineStart: タイムライン上の開始位置(秒)。ファイル追加では再生ヘッドの位置、それ以外は0秒。
+function addTrackFromAssetResponse(data, labelOverride, timelineStart = 0) {
   trackCounter += 1;
   const trackId = `t${trackCounter}`;
   const clip = {
@@ -894,7 +897,7 @@ function addTrackFromAssetResponse(data, labelOverride) {
     srcDuration: data.maxDuration ?? data.duration,
     trimStart: 0,
     trimEnd: data.duration,
-    timelineStart: 0,
+    timelineStart: Math.max(0, timelineStart),
     trackId,
   };
   insertMediaTrack({ trackId, trackType: "media", label: labelOverride || data.filename, clips: [clip] });
@@ -913,7 +916,7 @@ function preloadClipMedia(clip) {
   }
 }
 
-async function uploadFile(file) {
+async function uploadFile(file, timelineStart = 0) {
   setStatus(`アップロード中: ${file.name} ...`);
   const fd = new FormData();
   fd.append("file", file);
@@ -924,7 +927,7 @@ async function uploadFile(file) {
       setStatus(`エラー: ${data.error || "アップロードに失敗しました"}`, true);
       return;
     }
-    addTrackFromAssetResponse(data);
+    addTrackFromAssetResponse(data, undefined, timelineStart);
     setStatus(`追加しました: ${file.name}`);
   } catch (err) {
     setStatus(`通信エラー: ${err}`, true);
@@ -1639,10 +1642,17 @@ function tickPlayhead() {
   state.rafId = requestAnimationFrame(tickPlayhead);
 }
 
+// 今の再生ヘッド(オレンジのバー)の位置(秒)。再生中は state.playheadSec が更新されないので、
+// 再生を始めた位置からの経過時間で、今まさに表示されている位置を求める。
+function currentPlayheadSec() {
+  if (!state.isPlaying) return state.playheadSec;
+  const elapsed = Math.max(0, getAudioContext().currentTime - state.playStartCtxTime);
+  return state._playStartSec + elapsed;
+}
+
 el.stopBtn.addEventListener("click", () => {
   if (state.isPlaying) {
-    const elapsed = Math.max(0, getAudioContext().currentTime - state.playStartCtxTime);
-    state.playheadSec = state._playStartSec + elapsed;
+    state.playheadSec = currentPlayheadSec();
   }
   stopPlayback();
   setStatus("停止しました");
@@ -1905,11 +1915,12 @@ function openClipContextMenuForClip(clip, clientX, clientY) {
 // クリップが無い位置(トラックの空いている部分、またはトラックが1つも無い状態)を
 // 右クリックした場合のメニュー(新規画像生成/テキスト追加)。trackIdがnullなら新しいトラックを作る。
 // どの行でも、テキストの追加と新しい画像の生成の両方を選べる(行は中身の種類に縛られない)。
-function openClipContextMenuForNewImage(trackId, timelineStart, clientX, clientY) {
+// 行の空き部分の右クリックメニュー(新しい画像を生成 / テキストを追加)。
+// 追加する行は右クリックした行、タイムライン上の開始位置は再生ヘッドの位置(currentPlayheadSec)。
+function openClipContextMenuForNewImage(trackId, clientX, clientY) {
   closeAiPanel();
   closeTextPanel();
   el.clipContextMenu.dataset.targetTrackId = trackId || "";
-  el.clipContextMenu.dataset.targetTimelineStart = String(timelineStart);
   el.ctxGenVideoBtn.classList.add("hidden");
   el.ctxGenImageBtn.classList.add("hidden");
   el.ctxGenNewImageBtn.classList.remove("hidden");
@@ -2026,7 +2037,7 @@ el.ctxGenImageBtn.addEventListener("click", (e) => {
 el.ctxGenNewImageBtn.addEventListener("click", (e) => {
   e.stopPropagation();
   const trackId = el.clipContextMenu.dataset.targetTrackId || null;
-  const timelineStart = parseFloat(el.clipContextMenu.dataset.targetTimelineStart || "0");
+  const timelineStart = currentPlayheadSec(); // 再生ヘッド(オレンジのバー)の位置から置く
   const rect = el.clipContextMenu.getBoundingClientRect();
   closeClipContextMenu();
   openAiPanel("new", { trackId, timelineStart }, rect.left, rect.top);
@@ -2035,7 +2046,7 @@ el.ctxGenNewImageBtn.addEventListener("click", (e) => {
 el.ctxAddTextBtn.addEventListener("click", (e) => {
   e.stopPropagation();
   const trackId = el.clipContextMenu.dataset.targetTrackId || null;
-  const timelineStart = parseFloat(el.clipContextMenu.dataset.targetTimelineStart || "0");
+  const timelineStart = currentPlayheadSec(); // 再生ヘッド(オレンジのバー)の位置から置く
   const rect = el.clipContextMenu.getBoundingClientRect();
   closeClipContextMenu();
   openTextPanel("add", { trackId, timelineStart }, rect.left, rect.top);
@@ -2431,19 +2442,14 @@ document.addEventListener("contextmenu", (e) => {
   if (laneEl) {
     e.preventDefault();
     const trackId = laneEl.dataset.trackId || null;
-    const rect = laneEl.getBoundingClientRect();
-    let sec = Math.max(0, (e.clientX - rect.left) / PX_PER_SEC);
-    const snapDelta = bestSnapDelta(sec, collectSnapCandidates());
-    if (snapDelta !== null) sec = Math.max(0, sec + snapDelta);
-    openClipContextMenuForNewImage(trackId, sec, e.clientX, e.clientY);
+    openClipContextMenuForNewImage(trackId, e.clientX, e.clientY);
     return;
   }
 
   if (e.target.closest("#tracksContainer")) {
-    // トラックが1つも無い状態(空のヒント文言など)を右クリックした場合、
-    // 新しいトラックの先頭(0秒)に追加する
+    // 行以外のタイムライン領域を右クリックした場合は、新しい行に追加する
     e.preventDefault();
-    openClipContextMenuForNewImage(null, 0, e.clientX, e.clientY);
+    openClipContextMenuForNewImage(null, e.clientX, e.clientY);
     return;
   }
 
