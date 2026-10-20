@@ -1773,102 +1773,49 @@ let aiPanelTargetTimelineStart = 0;   // "new" モード: タイムライン上�
 // paid: true は、公式ドキュメント上「有料プランのみ」のモデル(無料プランで選ぶとMagic Hour側でエラーになる)。
 // 動画の解像度は、無料プランでは480pのみ使える。
 // noteの得意分野(実写・文字入れなど)は、各モデルの開発元・提供元の公開情報に基づく目安。
-// Flux Schnellは英語向けの文章理解部品(T5)を使っているため、日本語のプロンプトだと意図と
-// 違う画像になりやすい(例: 「黒猫」でアニメ風の人物が出る)。そのため新規画像の既定はZ-Image Turboにしている。
+//
+// 選択肢は、迷わず選べるよう各4つに絞っている。基準は「傾向が重ならない」「日本語の指示を誤読しない」
+// 「生成が遅すぎない」。外したモデル(Flux Schnell、GPT Image、Veo、Seedanceなど)もMagic Hour側では
+// 使えるので、必要になればここに戻せばよい。例えばFlux Schnellは英語向けの文章理解部品(T5)を使っていて、
+// 日本語のプロンプトだと意図と違う画像になりやすい(「黒猫」でアニメ風の人物が出る)ため外している。
 
 // 範囲[min, max]の整数秒と、個別の秒数をまとめて「対応している秒数か」を判定する関数を作る
 function secondsSpec(ranges, extras = []) {
   return (sec) => extras.includes(sec) || ranges.some(([min, max]) => sec >= min && sec <= max);
 }
-const VEO_SECONDS = [4, 6, 8, 16, 24, 32, 40, 48, 56];
 
 const AI_MODELS = {
   // 新規画像生成(AI Image Generator)
   new: [
     { value: "z-image-turbo", label: "Z-Image Turbo", note: "高速・実写系が得意" },
-    { value: "flux-2-klein", label: "Flux 2 Klein", note: "高速・実写〜アニメまで幅広い・日本語の指示も理解しやすい" },
-    { value: "flux-schnell", label: "Flux Schnell", note: "最速・英語プロンプト向け(日本語は誤解しやすい)" },
-    { value: "qwen-image-2.1", label: "Qwen Image 2.1", note: "文字入れ(ポスター・看板)が得意" },
-    { value: "krea-2", label: "Krea 2", note: "実写・フィルム写真風の質感" },
-    { value: "seedream-v4", label: "Seedream v4", note: "高品質な実写・デザイン", paid: true },
-    { value: "nano-banana", label: "Nano Banana", note: "指示の理解が得意", paid: true },
-    { value: "nano-banana-2-lite", label: "Nano Banana 2 Lite", note: "Nano Bananaの軽量版", paid: true },
-    { value: "nano-banana-2.1", label: "Nano Banana 2.1", note: "高品質・4k対応", paid: true },
-    { value: "gpt-image-2", label: "GPT Image 2", note: "指示に忠実・日本語の文字入れも可", paid: true },
-    { value: "seedream-v5-pro", label: "Seedream v5 Pro", note: "高品質な実写・デザイン", paid: true },
-    { value: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare", note: "最高品質クラス・指示に忠実", paid: true },
-    { value: "nano-banana-pro", label: "Nano Banana Pro", note: "多言語の文字入れに最も強い・最高品質", paid: true },
+    { value: "flux-2-klein", label: "Flux 2 Klein", note: "イラスト・アニメ調も得意・日本語の指示も理解しやすい" },
+    { value: "qwen-image-2.1", label: "Qwen Image 2.1", note: "文字入り(ポスター・看板)が得意" },
+    { value: "nano-banana", label: "Nano Banana", note: "細かい指示どおりに作るのが得意", paid: true },
   ],
   // 既存画像の編集(AI Image Editor)
   image: [
-    { value: "flux-2-klein", label: "Flux 2 Klein", note: "最速・幅広い画風・指示を理解しやすい" },
-    { value: "qwen-image-2.1", label: "Qwen Image 2.1", note: "文字入れが得意" },
-    { value: "qwen-edit", label: "Qwen Edit", note: "編集向け・文字の書き換えが得意" },
-    { value: "krea-2", label: "Krea 2", note: "実写・フィルム写真風の質感" },
-    { value: "seedream-v4", label: "Seedream v4", note: "複数画像の合成・実写", paid: true },
+    { value: "flux-2-klein", label: "Flux 2 Klein", note: "最速・幅広い画風" },
+    { value: "qwen-edit", label: "Qwen Edit", note: "文字の書き換えなど部分的な編集が得意" },
     { value: "nano-banana", label: "Nano Banana", note: "人物・キャラの見た目を保った編集", paid: true },
-    { value: "nano-banana-2-lite", label: "Nano Banana 2 Lite", note: "Nano Bananaの軽量版", paid: true },
-    { value: "nano-banana-2.1", label: "Nano Banana 2.1", note: "見た目を保った編集・4k対応", paid: true },
-    { value: "seedream-v4.5", label: "Seedream v4.5", note: "高品質な実写・デザイン", paid: true },
-    { value: "gpt-image-2", label: "GPT Image 2", note: "指示に忠実・日本語の文字入れも可", paid: true },
-    { value: "seedream-v5-pro", label: "Seedream v5 Pro", note: "高品質な実写・デザイン", paid: true },
-    { value: "nano-banana-2", label: "Nano Banana 2", note: "見た目を保った編集・高品質", paid: true },
-    { value: "gpt-image-2.5-flare", label: "GPT Image 2.5 Flare", note: "最高品質クラス", paid: true },
-    { value: "nano-banana-pro", label: "Nano Banana Pro", note: "多言語の文字入れに最も強い・最高品質", paid: true },
+    { value: "seedream-v4", label: "Seedream v4", note: "高品質な実写に仕上げる", paid: true },
   ],
   // 画像 -> 動画生成(Image-to-Video)。seconds: 対応秒数の判定、resolutions: 対応解像度(低い順)
   video: [
     {
-      value: "ltx-2.5", label: "LTX 2.5", note: "最速・最安・長尺OK",
+      value: "ltx-2.5", label: "LTX 2.5", note: "最速・最安・長い動画もOK",
       seconds: secondsSpec([[1, 60]]), resolutions: ["480p", "720p", "1080p"],
     },
     {
-      value: "minimax-h3", label: "MiniMax H3", note: "低コスト・参照に忠実",
+      value: "minimax-h3", label: "MiniMax H3", note: "元の画像に忠実に動かす・低コスト",
       seconds: secondsSpec([[1, 30]]), resolutions: ["480p", "720p", "1080p"],
     },
     {
-      value: "seedance-2.0-mini", label: "Seedance 2.0 Mini", note: "高速・低コスト・安定した動き", paid: true,
-      seconds: secondsSpec([[4, 15]]), resolutions: ["480p", "720p"],
-    },
-    {
-      value: "wan-2.2", label: "Wan 2.2", note: "物理的な動き・カメラワーク", paid: true,
+      value: "wan-2.2", label: "Wan 2.2", note: "大きな動き・カメラワーク", paid: true,
       seconds: secondsSpec([[3, 10]], [15]), resolutions: ["480p", "720p", "1080p"],
     },
     {
-      value: "wan-3.0", label: "Wan 3.0", note: "高品質・長めの動画", paid: true,
-      seconds: secondsSpec([[2, 10]], [15, 20, 25, 30]), resolutions: ["480p", "720p", "1080p"],
-    },
-    {
-      value: "seedance-1.5", label: "Seedance 1.5", note: "なめらかで一貫した動き", paid: true,
-      seconds: secondsSpec([[4, 12]]), resolutions: ["480p", "720p", "1080p"],
-    },
-    {
-      value: "seedance-2.0", label: "Seedance 2.0", note: "被写体を正確にコントロール", paid: true,
-      seconds: secondsSpec([[4, 15]]), resolutions: ["480p", "720p", "1080p", "4k"],
-    },
-    {
-      value: "kling-2.6", label: "Kling 2.6", note: "アクション・カメラ移動", paid: true,
-      seconds: secondsSpec([], [5, 10]), resolutions: ["720p", "1080p"],
-    },
-    {
-      value: "kling-3.0", label: "Kling 3.0", note: "映画的な表現", paid: true,
+      value: "kling-3.0", label: "Kling 3.0", note: "映画のような高品質", paid: true,
       seconds: secondsSpec([[3, 10]]), resolutions: ["720p", "1080p", "4k"],
-    },
-    {
-      value: "gemini-omni-1.1", label: "Gemini Omni 1.1", note: "短く正確なクリップ・高解像度", paid: true,
-      seconds: secondsSpec([[3, 10]]), resolutions: ["360p", "720p", "1080p", "4k"],
-    },
-    {
-      value: "veo3.1-lite", label: "Veo 3.1 Lite", note: "リアルさと価格のバランス", paid: true,
-      seconds: secondsSpec([], VEO_SECONDS), resolutions: ["720p", "1080p"],
-    },
-    {
-      value: "veo3.1", label: "Veo 3.1", note: "表情豊かな動き・人物のやり取り", paid: true,
-      seconds: secondsSpec([], VEO_SECONDS), resolutions: ["720p", "1080p"],
-    },
-    {
-      value: "seedance-2.5", label: "Seedance 2.5", note: "リアル・高精細・高価", paid: true,
-      seconds: secondsSpec([[4, 30]]), resolutions: ["480p", "720p", "1080p"],
     },
   ],
 };

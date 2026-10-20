@@ -553,10 +553,6 @@ body {
   font-size: 12px;
   color: var(--text);
 }
-.ai-panel-model-hint {
-  margin: 0;
-  font-size: 11px;
-}
 
 .ai-panel-footer {
   display: flex;
