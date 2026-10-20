@@ -911,6 +911,8 @@ function preloadClipMedia(clip) {
     loadImage(clip.fileId, clip.url).catch(() => {});
   } else if (clip.kind === "video") {
     getOrCreateVideoEl(clip.fileId, clip.url); // <video>のsrcをセットするだけでロードが始まる
+    // プレビュー再生で鳴らす音声も先に読み込んでおく(音声が無い動画は失敗するが、再生時に飛ばす)
+    loadBuffer(clip.fileId, clip.url).catch(() => {});
   } else {
     loadBuffer(clip.fileId, clip.url).catch(() => {});
   }
@@ -1448,6 +1450,7 @@ async function deleteTrackFile(track) {
       delete state.bufferCache[fileId];
       delete state.imageCache[fileId];
       delete state.loadedImages[fileId];
+      if (copiedClip && copiedClip.clip.fileId === fileId) copiedClip = null;
       delete state.videoCache[fileId];
     }
   }
@@ -1482,6 +1485,7 @@ el.clearUploadsBtn.addEventListener("click", async () => {
     state.bufferCache = {};
     state.imageCache = {};
     state.loadedImages = {};
+    copiedClip = null;
     state.videoCache = {};
     setStatus(`削除しました(${data.deleted ?? 0}件)`);
     renderAll();
@@ -1566,11 +1570,11 @@ el.playBtn.addEventListener("click", async () => {
   state.isPlaying = true;
   const startPlayhead = state.playheadSec;
 
-  // 再生対象のクリップを先に洗い出す。Web Audioでサンプル精度スケジュールできるのは
-  // kind="audio"のクリップのみ。画像には音声データが無く、動画クリップに埋め込まれた
-  // 音声はこのプレビュー再生エンジンでは扱わない(書き出し時のみ合流する)ため、
-  // どちらもスケジューリング対象からは除外し、代わりにtickPlayhead側のupdatePreview()で
-  // タイムラインに同期して表示だけを切り替える。
+  // 再生対象のクリップを先に洗い出す。音声クリップと、動画クリップに入っている音声を、
+  // Web Audioでサンプル単位の精度でまとめて予約して鳴らす。動画の音声は、動画ファイルを
+  // decodeAudioDataで読み込んで取り出す(プレビュー用の<video>は消音のまま映像だけに使う。
+  // <video>ごとに音を鳴らすと、要素ごとに再生タイミングがずれてカットの境目で音が乱れるため)。
+  // 画像・テキストには音が無いので、tickPlayhead側のupdatePreview()で表示だけを切り替える。
   const targets = [];
   let hasRemainingContent = false;
   for (const track of state.tracks) {
@@ -1580,7 +1584,7 @@ el.playBtn.addEventListener("click", async () => {
       const clipEndT = clip.timelineStart + dur;
       if (clipEndT <= startPlayhead) continue; // 既に終わっている
       hasRemainingContent = true;
-      if (clip.kind !== "audio") continue;
+      if (clip.kind !== "audio" && clip.kind !== "video") continue;
       targets.push({ clip, clipStartT, clipEndT });
     }
   }
@@ -1594,16 +1598,10 @@ el.playBtn.addEventListener("click", async () => {
   // 全クリップの音声データを先に確保してから、まとめて同じ基準時刻でスケジュールする。
   // バラバラにawaitすると、クリップごとの再生開始タイミングがズレてカットした
   // 境目にノイズが生じるため。(画像のみの区間の場合はtargetsが空のままでよい)
-  let buffers = [];
-  if (targets.length > 0) {
-    try {
-      buffers = await Promise.all(targets.map((t) => loadBuffer(t.clip.fileId, t.clip.url)));
-    } catch (err) {
-      setStatus(`音声の読み込みに失敗しました: ${err}`, true);
-      state.isPlaying = false;
-      return;
-    }
-  }
+  // 1つが読み込めなくても、ほかの音は鳴らす。音声トラックが無い動画(AI生成の動画の多く)は
+  // 読み込みに失敗するのが普通なので、黙って飛ばす。失敗はbufferCacheに残るので、次回からは即座に飛ばされる。
+  const results = await Promise.allSettled(targets.map((t) => loadBuffer(t.clip.fileId, t.clip.url)));
+  const failedAudio = targets.filter((t, i) => results[i].status === "rejected" && t.clip.kind === "audio");
 
   if (!state.isPlaying) return; // 読み込み待ちの間に停止/再クリックされていたら何もしない
 
@@ -1613,8 +1611,9 @@ el.playBtn.addEventListener("click", async () => {
   state._playStartSec = startPlayhead;
 
   targets.forEach(({ clip, clipStartT, clipEndT }, i) => {
+    if (results[i].status !== "fulfilled") return; // 音声を読み込めなかったクリップは鳴らさない
     const source = ctx.createBufferSource();
-    source.buffer = buffers[i];
+    source.buffer = results[i].value;
     source.connect(ctx.destination);
 
     const offsetIntoClip = clip.trimStart + Math.max(0, startPlayhead - clipStartT);
@@ -1625,7 +1624,11 @@ el.playBtn.addEventListener("click", async () => {
     state.activeSources.push(source);
   });
 
-  setStatus("再生中...");
+  if (failedAudio.length > 0) {
+    setStatus(`再生中...(読み込めなかった音声があります: ${failedAudio.map((t) => t.clip.filename).join(", ")})`, true);
+  } else {
+    setStatus("再生中...");
+  }
   tickPlayhead();
 });
 
@@ -2464,6 +2467,97 @@ document.addEventListener("keydown", (e) => {
     closeAiPanel();
     closeSettingsPanel();
     closeTextPanel();
+  }
+});
+
+// ---------- クリップのコピー＆ペースト(Ctrl+C / Ctrl+V) ----------
+// コピーした内容はページ内の変数に持つ(OSのクリップボードは使わない)。素材ファイル自体は複製せず、
+// 同じuploads/のファイルを指すクリップを増やすだけなので、非破壊編集の考え方のまま。
+
+let copiedClip = null; // { clip: コピーしたクリップの複製, sourceClipId, sourceTrackId }
+
+function copySelectedClip() {
+  const found = state.selectedClipId ? findClip(state.selectedClipId) : null;
+  if (!found) {
+    setStatus("コピーするクリップを選択してください", true);
+    return;
+  }
+  copiedClip = {
+    clip: structuredClone(found.clip),
+    sourceClipId: found.clip.clipId,
+    sourceTrackId: found.track.trackId,
+  };
+  setStatus(`コピーしました: ${clipDisplayName(found.clip)}(Ctrl+Vで貼り付け)`);
+}
+
+// その行のその時間帯([start, end))に、ほかのクリップが無いか
+function isTrackRangeFree(track, start, end) {
+  const EPS = 1e-6;
+  return track.clips.every((c) => {
+    const cStart = c.timelineStart;
+    const cEnd = c.timelineStart + (c.trimEnd - c.trimStart);
+    return end <= cStart + EPS || start >= cEnd - EPS;
+  });
+}
+
+// 貼り付け位置:
+//   時刻: 再生ヘッドの位置。ただし再生ヘッドがコピー元クリップの上にあるときは、コピー元のすぐ後ろ
+//         (コピーしてすぐ貼り付けると、元のクリップの隣に並ぶ)。
+//   行:   コピー元と同じ行。その時間帯が空いていない(または行が消えている)ときは、新しいオーバーレイ行。
+// 貼り付け後はそのクリップを選択し、再生ヘッドを終わりへ動かす(連続で貼ると同じ行に隙間なく並ぶ)。
+function pasteClip() {
+  if (!copiedClip) {
+    setStatus("貼り付けるクリップがありません。先にクリップを選んでCtrl+Cでコピーしてください", true);
+    return;
+  }
+  const dur = copiedClip.clip.trimEnd - copiedClip.clip.trimStart;
+  const playhead = currentPlayheadSec();
+  let start = playhead;
+  const source = findClip(copiedClip.sourceClipId);
+  if (source) {
+    const srcStart = source.clip.timelineStart;
+    const srcEnd = srcStart + (source.clip.trimEnd - source.clip.trimStart);
+    if (playhead >= srcStart && playhead < srcEnd) start = srcEnd;
+  }
+  start = Math.max(0, start);
+
+  let track = state.tracks.find((t) => t.trackId === copiedClip.sourceTrackId);
+  if (!track || !isTrackRangeFree(track, start, start + dur)) {
+    track = newOverlayTrack();
+    state.tracks.push(track);
+  }
+
+  const clip = structuredClone(copiedClip.clip);
+  clip.clipId = `c${++clipCounter}`;
+  clip.trackId = track.trackId;
+  clip.timelineStart = start;
+  track.clips.push(clip);
+  if (clip.kind !== "text") preloadClipMedia(clip);
+
+  state.selectedClipId = clip.clipId;
+  state.playheadSec = start + dur;
+  if (!state.isPlaying) updateTimeDisplay(state.playheadSec);
+  setStatus(`貼り付けました(${start.toFixed(1)}秒の位置)`);
+  renderAll();
+}
+
+// 入力欄にフォーカスがあるときは、普通の文字のコピー＆ペーストに任せる
+function isTypingTarget(target) {
+  if (!target) return false;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+  if (isTypingTarget(e.target)) return;
+  const key = e.key.toLowerCase();
+  if (key === "c") {
+    e.preventDefault();
+    copySelectedClip();
+  } else if (key === "v") {
+    e.preventDefault();
+    pasteClip();
   }
 });
 
