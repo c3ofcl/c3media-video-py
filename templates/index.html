@@ -118,7 +118,34 @@
         <option value="zen-maru-gothic">Zen Maru Gothic(丸ゴシック)</option>
       </select>
     </div>
-    <div id="textPanelPreview" class="text-panel-font-preview"></div>
+    <div class="ai-panel-row">
+      <label class="settings-label" for="textPanelColor">文字色</label>
+      <input type="color" id="textPanelColor" class="text-panel-color" value="#ffffff">
+    </div>
+    <div class="ai-panel-row">
+      <label class="settings-label" for="textPanelBold">太さ</label>
+      <select id="textPanelBold" class="select">
+        <option value="0">標準</option>
+        <option value="1">やや太い</option>
+        <option value="2">太い</option>
+        <option value="3">極太</option>
+      </select>
+    </div>
+    <div class="ai-panel-row">
+      <label class="settings-label text-panel-check" for="textPanelOutline">
+        <input type="checkbox" id="textPanelOutline" checked> 枠線
+      </label>
+      <input type="color" id="textPanelOutlineColor" class="text-panel-color" value="#000000" title="枠線の色">
+    </div>
+    <div class="ai-panel-row">
+      <label class="settings-label" for="textPanelOutlineWidth">枠線の太さ</label>
+      <span class="text-panel-range">
+        <input type="range" id="textPanelOutlineWidth" min="1" max="20" step="1" value="6">
+        <span id="textPanelOutlineWidthValue" class="text-panel-range-value">6</span>
+      </span>
+    </div>
+    <!-- 見本は実際のプレビュー・書き出しと同じ描き方(drawStyledTextLines)で描く -->
+    <canvas id="textPanelPreview" class="text-panel-font-preview" width="640" height="160"></canvas>
     <p class="ai-panel-hint">配置は追加後、上のプレビュー画面でテキストを直接ドラッグして調整できます。</p>
     <div class="ai-panel-footer">
       <button id="textPanelSubmitBtn" class="btn primary">追加する</button>

@@ -654,8 +654,48 @@ def _wrap_text_to_width(text, font_path, font_size, max_width_px):
 TEXT_LINE_HEIGHT_RATIO = 1.3
 TEXT_BASELINE_RATIO = 0.85
 
+# テキストの見た目(文字の太さ・文字色・枠線)。script.jsの同名の定数と揃えること。
+# 太さは「文字の周りを文字色で太らせる量」で、文字サイズに対する倍率(標準/やや太い/太い/極太)。
+# 枠線の太さは、文字の外側に出る幅を文字サイズに対する%で持つ(四隅で拡大縮小しても比率が変わらない)。
+TEXT_BOLD_RATIOS = (0.0, 0.02, 0.04, 0.06)
+MIN_OUTLINE_WIDTH = 1.0
+MAX_OUTLINE_WIDTH = 20.0
+DEFAULT_OUTLINE_WIDTH = 6.0
+DEFAULT_TEXT_COLOR = "#ffffff"
+DEFAULT_OUTLINE_COLOR = "#000000"
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
-def _render_text_image(text, font_path, font_size, max_width_px):
+
+def _parse_text_style(c):
+    """書き出しリクエストのテキストクリップから見た目の設定を取り出す。不正な値は既定値・範囲内に直す。"""
+    def color(value, default):
+        return value if isinstance(value, str) and _HEX_COLOR_RE.match(value) else default
+
+    try:
+        bold_level = int(c.get("boldLevel") or 0)
+    except (TypeError, ValueError):
+        bold_level = 0
+    bold_level = max(0, min(len(TEXT_BOLD_RATIOS) - 1, bold_level))
+
+    try:
+        outline_width = float(c.get("outlineWidth", DEFAULT_OUTLINE_WIDTH))
+    except (TypeError, ValueError):
+        outline_width = DEFAULT_OUTLINE_WIDTH
+    if not math.isfinite(outline_width):
+        outline_width = DEFAULT_OUTLINE_WIDTH
+    outline_width = max(MIN_OUTLINE_WIDTH, min(MAX_OUTLINE_WIDTH, outline_width))
+
+    outline_enabled = c.get("outlineEnabled")
+    return {
+        "text_color": color(c.get("textColor"), DEFAULT_TEXT_COLOR),
+        "bold_level": bold_level,
+        "outline_enabled": True if outline_enabled is None else bool(outline_enabled),
+        "outline_width": outline_width,
+        "outline_color": color(c.get("outlineColor"), DEFAULT_OUTLINE_COLOR),
+    }
+
+
+def _render_text_image(text, font_path, font_size, max_width_px, style=None):
     """
     テキストクリップを、プレビュー(script.jsのdrawSingleTextClip)と同じ並べ方でRGBA画像に描く。
     (moviepyのTextClipは内部の余白・ベースラインの位置がプレビューと違い、同じ位置を指定しても
@@ -663,15 +703,26 @@ def _render_text_image(text, font_path, font_size, max_width_px):
     戻り値: (画像, 余白pad, 文字ブロックの幅, 文字ブロックの高さ)
       文字ブロックはプレビューの選択枠・配置の基準になる矩形で、画像はその外側にpadずつ余白を持つ
       (極太フォントなど、行の枠からはみ出す字形や縁取りも欠けないようにするため)。
+    style: _parse_text_style の結果(省略時は既定 = 白文字・黒枠線)。描く順番はプレビュー
+      (script.jsのdrawStyledTextLines)と同じで、枠線 → 文字色で太らせる → 文字色で塗る。
     """
+    if style is None:
+        style = _parse_text_style({})
     font = ImageFont.truetype(font_path, font_size)
     lines = _wrap_text_to_width(text, font_path, font_size, max_width_px).split("\n")
     line_h = font_size * TEXT_LINE_HEIGHT_RATIO
     block_w = max(1.0, max(font.getlength(line) for line in lines))
     block_h = len(lines) * line_h
-    # canvasのstrokeText(線幅 fontSize/8)は線の半分が外側に出るので、外側への太さはfontSize/16で揃う
-    stroke = max(1, round(font_size / 16))
-    pad = math.ceil(font_size * 0.5) + stroke
+    # 文字の外側に出る幅(px)。canvasのstrokeTextは線幅の半分が外側に出るので、プレビュー側は
+    # この2倍の線幅で描いている。
+    bold = font_size * TEXT_BOLD_RATIOS[style["bold_level"]]
+    outline = font_size * style["outline_width"] / 100 if style["outline_enabled"] else 0.0
+
+    def stroke_px(width):
+        return max(1, round(width)) if width > 0 else 0
+
+    outer = stroke_px(bold + outline)
+    pad = math.ceil(font_size * 0.5) + outer
 
     img = Image.new("RGBA", (math.ceil(block_w) + pad * 2, math.ceil(block_h) + pad * 2), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -679,15 +730,17 @@ def _render_text_image(text, font_path, font_size, max_width_px):
         if not line:
             continue
         # anchor="ms": 水平は中央・垂直はベースライン(プレビューのtextAlign=center / textBaseline=alphabetic)
-        draw.text(
-            (pad + block_w / 2, pad + i * line_h + font_size * TEXT_BASELINE_RATIO),
-            line,
-            font=font,
-            fill="white",
-            anchor="ms",
-            stroke_width=stroke,
-            stroke_fill="black",
-        )
+        xy = (pad + block_w / 2, pad + i * line_h + font_size * TEXT_BASELINE_RATIO)
+        if style["outline_enabled"]:
+            # 1. 枠線(太らせる分+枠線の幅)
+            draw.text(xy, line, font=font, fill=style["outline_color"], anchor="ms",
+                      stroke_width=outer, stroke_fill=style["outline_color"])
+        if bold > 0:
+            # 2. 文字色で太らせる
+            draw.text(xy, line, font=font, fill=style["text_color"], anchor="ms",
+                      stroke_width=stroke_px(bold), stroke_fill=style["text_color"])
+        # 3. 文字色で塗る
+        draw.text(xy, line, font=font, fill=style["text_color"], anchor="ms")
     return img, pad, block_w, block_h
 
 
@@ -716,7 +769,7 @@ def export_video(clips, canvas_size=VIDEO_CANVAS_SIZE):
     # [(kind, timelineStart, trimStart, trimEnd, path, posX, posY, scale), ...]
     # 画像・動画は同じリストに入れ、フロントエンドのトラック順(後にある要素ほど上に重なる)を保つ。
     visual_specs = []
-    text_specs = []  # [(timelineStart, duration, text, fontKey, posX, posY, fontSize), ...]
+    text_specs = []  # [(timelineStart, duration, text, fontKey, posX, posY, fontSize, style), ...]
     # テキストは常に画像・動画より後に(=一番上に)重ねる。
     total_end_sec = 0.0
 
@@ -741,7 +794,16 @@ def export_video(clips, canvas_size=VIDEO_CANVAS_SIZE):
                 font_size = DEFAULT_TEXT_FONT_SIZE
             font_size = max(MIN_TEXT_FONT_SIZE, min(MAX_TEXT_FONT_SIZE, font_size))
             text_specs.append(
-                (timeline_start, dur, text, c.get("fontKey"), c.get("positionX"), c.get("positionY"), font_size)
+                (
+                    timeline_start,
+                    dur,
+                    text,
+                    c.get("fontKey"),
+                    c.get("positionX"),
+                    c.get("positionY"),
+                    font_size,
+                    _parse_text_style(c),
+                )
             )
             continue
 
@@ -788,11 +850,11 @@ def export_video(clips, canvas_size=VIDEO_CANVAS_SIZE):
 
     # テキストは画像・動画より後に追加することで、常に一番上に重なるようにする
     text_scale = _text_scale(canvas_w, canvas_h)
-    for timeline_start, dur, text, font_key, pos_x, pos_y, font_size in text_specs:
+    for timeline_start, dur, text, font_key, pos_x, pos_y, font_size, style in text_specs:
         font_path = _font_path(font_key)
         font_size = max(1, round(font_size * text_scale))  # 画面サイズに合わせた実際のピクセル数
         max_width_px = canvas_w * TEXT_MAX_WIDTH_RATIO
-        img, pad, block_w, block_h = _render_text_image(text, font_path, font_size, max_width_px)
+        img, pad, block_w, block_h = _render_text_image(text, font_path, font_size, max_width_px, style)
         # RGBAの配列を渡すと、透明部分はmoviepyが自動でマスクにする
         txt_clip = ImageClip(np.array(img), duration=dur)
         # 位置の基準は文字ブロック(プレビューと同じ)。画像はその外側にpadの余白を持つ
@@ -862,6 +924,12 @@ def export():
           "fontSize": 48,                # 短辺720pxの画面でのフォントサイズ(px相当)。プレビューの四隅ドラッグで変更する
           "positionX": 0.5,             # テキスト中心のx座標(キャンバス幅に対する相対値0〜1)
           "positionY": 0.82,            # テキスト中心のy座標(キャンバス高さに対する相対値0〜1)
+          # 見た目(いずれも省略可。省略時は白文字・黒枠線。_parse_text_style で検証する)
+          "textColor": "#ffffff",       # 文字色
+          "boldLevel": 0,               # 太さ 0〜3(標準/やや太い/太い/極太)
+          "outlineEnabled": true,       # 枠線の有無
+          "outlineWidth": 6,            # 枠線の太さ(文字サイズに対する%、1〜20)
+          "outlineColor": "#000000",    # 枠線の色
           "trimStart": 0.0,
           "trimEnd": 5.0,               # 画像同様、表示秒数の基準
           "timelineStart": 3.0

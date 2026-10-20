@@ -24,6 +24,15 @@ const MIN_TEXT_FONT_SIZE = 12; // サーバー側(app.pyのMIN_TEXT_FONT_SIZE)�
 const MAX_TEXT_FONT_SIZE = 240; // サーバー側(app.pyのMAX_TEXT_FONT_SIZE)と揃えること
 const TEXT_MARGIN_PX = 40; // サーバー側(app.pyのTEXT_MARGIN_PX)と揃えること
 const TEXT_MAX_WIDTH_RATIO = 0.86; // サーバー側(app.pyのTEXT_MAX_WIDTH_RATIO)と揃えること
+// テキストの見た目(文字の太さ・文字色・枠線)。サーバー側(app.pyの同名の定数)と揃えること。
+// 太さは「文字の周りを文字色で太らせる量」で、文字サイズに対する倍率(標準/やや太い/太い/極太)。
+// 枠線の太さは、文字の外側に出る幅を文字サイズに対する%で持つ(四隅で拡大縮小しても比率が変わらない)。
+const TEXT_BOLD_RATIOS = [0, 0.02, 0.04, 0.06];
+const MIN_OUTLINE_WIDTH = 1;
+const MAX_OUTLINE_WIDTH = 20;
+const DEFAULT_OUTLINE_WIDTH = 6;
+const DEFAULT_TEXT_COLOR = "#ffffff";
+const DEFAULT_OUTLINE_COLOR = "#000000";
 // テキストのfontSizeは、短辺がこの長さ(px)の画面での大きさとして扱い、実際の画面サイズに合わせて
 // 拡大縮小する。サーバー側(app.pyのTEXT_REFERENCE_SHORT_SIDE)と揃えること
 const TEXT_REFERENCE_SHORT_SIDE = 720;
@@ -123,6 +132,12 @@ const el = {
   textPanelContent: document.getElementById("textPanelContent"),
   textPanelFont: document.getElementById("textPanelFont"),
   textPanelPreview: document.getElementById("textPanelPreview"),
+  textPanelColor: document.getElementById("textPanelColor"),
+  textPanelBold: document.getElementById("textPanelBold"),
+  textPanelOutline: document.getElementById("textPanelOutline"),
+  textPanelOutlineColor: document.getElementById("textPanelOutlineColor"),
+  textPanelOutlineWidth: document.getElementById("textPanelOutlineWidth"),
+  textPanelOutlineWidthValue: document.getElementById("textPanelOutlineWidthValue"),
   textPanelCloseBtn: document.getElementById("textPanelCloseBtn"),
   textPanelSubmitBtn: document.getElementById("textPanelSubmitBtn"),
   textPanelStatus: document.getElementById("textPanelStatus"),
@@ -346,6 +361,56 @@ function measureTextBlock(ctx, clip, canvasW, canvasH) {
   return { fontSize, lineHeight, lines, width, height: lines.length * lineHeight };
 }
 
+// クリップの見た目の設定を、既定値を補って返す(古いクリップや未設定の項目は白文字・黒枠線)
+function textStyleOf(clip) {
+  const isColor = (v) => typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v);
+  const width = Number(clip.outlineWidth);
+  return {
+    textColor: isColor(clip.textColor) ? clip.textColor : DEFAULT_TEXT_COLOR,
+    boldLevel: Math.max(0, Math.min(TEXT_BOLD_RATIOS.length - 1, Math.round(Number(clip.boldLevel) || 0))),
+    outlineEnabled: clip.outlineEnabled !== false,
+    outlineWidth: Number.isFinite(width)
+      ? Math.max(MIN_OUTLINE_WIDTH, Math.min(MAX_OUTLINE_WIDTH, width))
+      : DEFAULT_OUTLINE_WIDTH,
+    outlineColor: isColor(clip.outlineColor) ? clip.outlineColor : DEFAULT_OUTLINE_COLOR,
+  };
+}
+
+// 文字の外側に出る幅(px)。bold: 文字色で太らせる分、outline: 枠線の分
+function textStrokeWidths(fontSize, style) {
+  const bold = fontSize * TEXT_BOLD_RATIOS[style.boldLevel];
+  const outline = style.outlineEnabled ? (fontSize * style.outlineWidth) / 100 : 0;
+  return { bold, outline, outer: bold + outline };
+}
+
+// 見た目の設定に従って、複数行のテキストを中央揃えで描く。サーバー側(app.pyの_render_text_image)と
+// 同じ順番で、1. 枠線 → 2. 文字色で太らせる → 3. 文字色で塗る。
+// canvasのstrokeTextは線幅の半分が文字の外側に出るので、外側の幅の2倍の線幅で描く。
+function drawStyledTextLines(ctx, lines, centerX, firstBaselineY, lineHeight, fontSize, style) {
+  const { bold, outer } = textStrokeWidths(fontSize, style);
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.lineJoin = "round";
+  lines.forEach((line, i) => {
+    if (!line) return;
+    const y = firstBaselineY + i * lineHeight;
+    if (style.outlineEnabled && outer > 0) {
+      ctx.lineWidth = outer * 2;
+      ctx.strokeStyle = style.outlineColor;
+      ctx.strokeText(line, centerX, y);
+    }
+    if (bold > 0) {
+      ctx.lineWidth = bold * 2;
+      ctx.strokeStyle = style.textColor;
+      ctx.strokeText(line, centerX, y);
+    }
+    ctx.fillStyle = style.textColor;
+    ctx.fillText(line, centerX, y);
+  });
+  ctx.restore();
+}
+
 function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
   const { fontSize, lineHeight, lines, width, height } = measureTextBlock(ctx, clip, canvasW, canvasH);
 
@@ -355,28 +420,19 @@ function drawSingleTextClip(ctx, clip, canvasW, canvasH) {
   const blockX = centerX - width / 2;
   const blockY = centerY - height / 2;
 
-  // ヒットテスト(プレビュー画面でのドラッグ判定)用に、描画のたびに最新の矩形を覚えておく
+  const style = textStyleOf(clip);
+
+  // ヒットテスト(プレビュー画面でのドラッグ判定)用に、描画のたびに最新の矩形を覚えておく。
+  // 選択枠は、太い枠線もはみ出さないよう、文字の外側に出る幅の分だけ広げる。
   state.previewBoxes[clip.clipId] = {
     x: blockX,
     y: blockY,
     width,
     height,
-    pad: TEXT_FRAME_PAD * previewUiScale(),
+    pad: TEXT_FRAME_PAD * previewUiScale() + textStrokeWidths(fontSize, style).outer,
   };
 
-  ctx.textAlign = "center";
-  ctx.textBaseline = "alphabetic";
-  ctx.lineJoin = "round";
-  ctx.lineWidth = Math.max(2, Math.round(fontSize / 8));
-  ctx.strokeStyle = "black";
-  ctx.fillStyle = "white";
-
-  lines.forEach((line, i) => {
-    const cx = blockX + width / 2;
-    const cy = blockY + i * lineHeight + fontSize * 0.85;
-    ctx.strokeText(line, cx, cy);
-    ctx.fillText(line, cx, cy);
-  });
+  drawStyledTextLines(ctx, lines, blockX + width / 2, blockY + fontSize * 0.85, lineHeight, fontSize, style);
 }
 
 // 選択中のクリップ(テキスト・画像・動画)に、ドラッグで動かせる/四隅でリサイズできることが
@@ -697,19 +753,22 @@ function startPreviewResize(clip, corner) {
     // 新しい大きさでの寸法を求め、固定角の画面上の位置が変わらないよう中心を再計算する
     let newWidth;
     let newHeight;
+    let newPad = pad;
     if (isText) {
       clip.fontSize = Math.max(MIN_TEXT_FONT_SIZE, Math.min(MAX_TEXT_FONT_SIZE, startFontSize * ratio));
       const m = measureTextBlock(canvas.getContext("2d"), clip, canvas.width, canvas.height);
       newWidth = m.width;
       newHeight = m.height;
+      // 選択枠の余白は枠線の太さを含み、文字サイズに比例して変わるので計算し直す
+      newPad = TEXT_FRAME_PAD * previewUiScale() + textStrokeWidths(m.fontSize, textStyleOf(clip)).outer;
     } else {
       clip.scale = Math.max(MIN_MEDIA_SCALE, Math.min(MAX_MEDIA_SCALE, startScale * ratio));
       newWidth = baseWidth * clip.scale;
       newHeight = baseHeight * clip.scale;
     }
 
-    const newCenterX = isLeft ? fixed.x - pad - newWidth / 2 : fixed.x + pad + newWidth / 2;
-    const newCenterY = isTop ? fixed.y - pad - newHeight / 2 : fixed.y + pad + newHeight / 2;
+    const newCenterX = isLeft ? fixed.x - newPad - newWidth / 2 : fixed.x + newPad + newWidth / 2;
+    const newCenterY = isTop ? fixed.y - newPad - newHeight / 2 : fixed.y + newPad + newHeight / 2;
     clip.position = {
       x: Math.max(0, Math.min(1, newCenterX / canvas.width)),
       y: Math.max(0, Math.min(1, newCenterY / canvas.height)),
@@ -1607,6 +1666,11 @@ el.exportBtn.addEventListener("click", async () => {
         text: clip.text,
         fontKey: clip.fontKey,
         fontSize: clip.fontSize,
+        textColor: clip.textColor,
+        boldLevel: clip.boldLevel,
+        outlineEnabled: clip.outlineEnabled,
+        outlineWidth: clip.outlineWidth,
+        outlineColor: clip.outlineColor,
         positionX: clip.position ? clip.position.x : undefined,
         positionY: clip.position ? clip.position.y : undefined,
         // 画像・動画クリップの大きさ(1 = 画面いっぱいに収まる大きさ)
@@ -2204,10 +2268,51 @@ let textPanelTargetClipId = null;      // "edit"モード用
 let textPanelTargetTrackId = null;     // "add"モード用(nullなら新規トラックを作る)
 let textPanelTargetTimelineStart = 0;  // "add"モード用
 
+// 新しくテキストを追加するときの見た目の初期値。前回追加・更新したときの設定を引き継ぐ
+// (字幕を何枚も同じ見た目で作りやすくするため。ページを再読み込みすると既定に戻る)。
+let lastTextStyle = textStyleOf({});
+
+// パネルの入力欄から、見た目の設定を読み取る
+function readTextPanelStyle() {
+  return textStyleOf({
+    textColor: el.textPanelColor.value,
+    boldLevel: Number(el.textPanelBold.value),
+    outlineEnabled: el.textPanelOutline.checked,
+    outlineWidth: Number(el.textPanelOutlineWidth.value),
+    outlineColor: el.textPanelOutlineColor.value,
+  });
+}
+
+// 見た目の設定をパネルの入力欄に入れる
+function writeTextPanelStyle(style) {
+  el.textPanelColor.value = style.textColor;
+  el.textPanelBold.value = String(style.boldLevel);
+  el.textPanelOutline.checked = style.outlineEnabled;
+  el.textPanelOutlineWidth.value = String(style.outlineWidth);
+  el.textPanelOutlineColor.value = style.outlineColor;
+}
+
+// パネル内の見本を、実際のプレビュー・書き出しと同じ描き方で描く。
+// 枠線なしのときは、枠線の色・太さを操作できないようにする。
 function updateTextPanelPreview() {
-  const info = FONT_REGISTRY[el.textPanelFont.value] || FONT_REGISTRY[DEFAULT_FONT_KEY];
-  el.textPanelPreview.style.fontFamily = `"${info.cssFamily}"`;
-  el.textPanelPreview.textContent = el.textPanelContent.value || "プレビュー";
+  const style = readTextPanelStyle();
+  el.textPanelOutlineColor.disabled = !style.outlineEnabled;
+  el.textPanelOutlineWidth.disabled = !style.outlineEnabled;
+  el.textPanelOutlineWidthValue.textContent = `${style.outlineWidth}%`;
+
+  const canvas = el.textPanelPreview;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const text = (el.textPanelContent.value || "プレビュー").split("\n")[0] || "プレビュー";
+  // 見本の枠に収まるよう、文字の幅に合わせて文字サイズを決める(最大64px)
+  let fontSize = 64;
+  ctx.font = textClipFontCss(el.textPanelFont.value, fontSize);
+  const { outer } = textStrokeWidths(fontSize, style);
+  const maxWidth = canvas.width - 40 - outer * 2;
+  const measured = ctx.measureText(text).width;
+  if (measured > maxWidth) fontSize = Math.max(12, (fontSize * maxWidth) / measured);
+  ctx.font = textClipFontCss(el.textPanelFont.value, fontSize);
+  drawStyledTextLines(ctx, [text], canvas.width / 2, canvas.height / 2 + fontSize * 0.35, 0, fontSize, style);
 }
 
 function closeTextPanel() {
@@ -2230,6 +2335,7 @@ function openTextPanel(mode, ctx, anchorX, anchorY) {
     el.textPanelSubmitBtn.textContent = "更新する";
     el.textPanelContent.value = clip.text || "";
     el.textPanelFont.value = clip.fontKey || DEFAULT_FONT_KEY;
+    writeTextPanelStyle(textStyleOf(clip));
   } else {
     textPanelTargetTrackId = ctx.trackId;
     textPanelTargetTimelineStart = ctx.timelineStart;
@@ -2237,6 +2343,7 @@ function openTextPanel(mode, ctx, anchorX, anchorY) {
     el.textPanelSubmitBtn.textContent = "追加する";
     el.textPanelContent.value = "";
     el.textPanelFont.value = DEFAULT_FONT_KEY;
+    writeTextPanelStyle(lastTextStyle);
   }
   updateTextPanelPreview();
 
@@ -2251,12 +2358,23 @@ function openTextPanel(mode, ctx, anchorX, anchorY) {
 
 el.textPanelContent.addEventListener("input", updateTextPanelPreview);
 el.textPanelFont.addEventListener("change", updateTextPanelPreview);
+for (const input of [el.textPanelColor, el.textPanelOutlineColor, el.textPanelOutlineWidth]) {
+  input.addEventListener("input", updateTextPanelPreview);
+}
+el.textPanelBold.addEventListener("change", updateTextPanelPreview);
+el.textPanelOutline.addEventListener("change", updateTextPanelPreview);
+el.textPanelOutlineWidth.min = MIN_OUTLINE_WIDTH;
+el.textPanelOutlineWidth.max = MAX_OUTLINE_WIDTH;
+// フォントの読み込みが終わったら、見本を正しいフォントで描き直す
+document.fonts?.addEventListener?.("loadingdone", () => {
+  if (!el.textEditPanel.classList.contains("hidden")) updateTextPanelPreview();
+});
 el.textPanelCloseBtn.addEventListener("click", closeTextPanel);
 
 // 新しいテキストクリップを、指定したトラックの指定位置(タイムライン上)に追加する。
 // 画面上の表示位置は既定値(下寄り中央)からスタートし、プレビュー画面でのドラッグで調整する。
 // trackIdがnull、または該当トラックが見つからない場合は新しいトラックを作る。
-function addTextClipAt(trackId, timelineStart, text, fontKey) {
+function addTextClipAt(trackId, timelineStart, text, fontKey, style = textStyleOf({})) {
   const track = trackId ? state.tracks.find((t) => t.trackId === trackId) : null;
 
   const clip = {
@@ -2264,6 +2382,7 @@ function addTextClipAt(trackId, timelineStart, text, fontKey) {
     kind: "text",
     text,
     fontKey,
+    ...style, // textColor / boldLevel / outlineEnabled / outlineWidth / outlineColor
     fontSize: DEFAULT_TEXT_FONT_SIZE,
     position: { ...DEFAULT_TEXT_POSITION },
     trimStart: 0,
@@ -2295,6 +2414,8 @@ el.textPanelSubmitBtn.addEventListener("click", () => {
     return;
   }
   const fontKey = el.textPanelFont.value;
+  const style = readTextPanelStyle();
+  lastTextStyle = style;
 
   if (textPanelMode === "edit") {
     const found = findClip(textPanelTargetClipId);
@@ -2306,9 +2427,10 @@ el.textPanelSubmitBtn.addEventListener("click", () => {
     // 表示位置(position)はプレビュー画面でのドラッグで管理するため、ここでは変更しない
     found.clip.text = text;
     found.clip.fontKey = fontKey;
+    Object.assign(found.clip, style);
     setStatus("テキストを更新しました");
   } else {
-    addTextClipAt(textPanelTargetTrackId, textPanelTargetTimelineStart, text, fontKey);
+    addTextClipAt(textPanelTargetTrackId, textPanelTargetTimelineStart, text, fontKey, style);
     setStatus("テキストを追加しました");
   }
 
