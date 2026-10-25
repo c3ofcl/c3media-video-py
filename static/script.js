@@ -4,6 +4,7 @@ const PX_PER_SEC = 60; // style.css の --px-per-sec と揃える
 const LABEL_WIDTH = 150;
 const GRID_SNAP_SEC = 1; // グリッドスナップの間隔(秒)。track-laneの背景の縦線(1秒間隔)と揃えている
 const SNAP_PX_THRESHOLD = 8; // スナップが効く距離(px)。PX_PER_SECで秒に換算して使う
+const SKIP_SEC = 5; // 再生バーの「戻る」「進む」ボタンで動かす秒数
 // クリップを上下に動かして別の行へ移す時の感度。横移動中の多少の手ブレで行が変わらないようにする。
 const ROW_CHANGE_START_PX = 24; // 縦にこれ以上動かすまでは、行の移動を始めない(横移動に専念する)
 const ROW_CHANGE_INSET_PX = 16; // 別の行へ切り替えるには、その行の上下端からこれ以上内側まで入る必要がある
@@ -85,15 +86,17 @@ const el = {
   ruler: document.getElementById("ruler"),
   status: document.getElementById("status"),
   playBtn: document.getElementById("playBtn"),
-  stopBtn: document.getElementById("stopBtn"),
-  cutBtn: document.getElementById("cutBtn"),
-  deleteBtn: document.getElementById("deleteBtn"),
+  rewindBtn: document.getElementById("rewindBtn"),
+  backBtn: document.getElementById("backBtn"),
+  forwardBtn: document.getElementById("forwardBtn"),
+  endBtn: document.getElementById("endBtn"),
+  transportBar: document.getElementById("transportBar"),
   clearUploadsBtn: document.getElementById("clearUploadsBtn"),
   exportBtn: document.getElementById("exportBtn"),
   formatSelect: document.getElementById("formatSelect"),
   canvasSizeSelect: document.getElementById("canvasSizeSelect"),
   previewWrap: document.getElementById("previewWrap"),
-  canvasCustomInputs: document.getElementById("canvasCustomInputs"),
+  canvasCustomBar: document.getElementById("canvasCustomBar"),
   canvasCustomWidth: document.getElementById("canvasCustomWidth"),
   canvasCustomHeight: document.getElementById("canvasCustomHeight"),
   currentTimeLabel: document.getElementById("currentTimeLabel"),
@@ -105,6 +108,8 @@ const el = {
   ctxGenNewImageBtn: document.getElementById("ctxGenNewImageBtn"),
   ctxAddTextBtn: document.getElementById("ctxAddTextBtn"),
   ctxEditTextBtn: document.getElementById("ctxEditTextBtn"),
+  ctxCutBtn: document.getElementById("ctxCutBtn"),
+  ctxDeleteBtn: document.getElementById("ctxDeleteBtn"),
   aiActionPanel: document.getElementById("aiActionPanel"),
   aiPanelTitle: document.getElementById("aiPanelTitle"),
   aiPanelHint: document.getElementById("aiPanelHint"),
@@ -552,15 +557,19 @@ function applyCanvasSize(w, h) {
 
 // プレビュー枠の表示サイズを、画面サイズの縦横比を保ったまま、使える範囲いっぱいに合わせる。
 // 使える高さ = 窓の高さのうち、下のタイムライン用(EDITOR_MIN_HEIGHT_RATIO)・上のツールバー・
-// お知らせ欄・「プレビュー」見出しを除いた残り。窓の大きさが変わった時にも呼び直す。
+// カスタムサイズのバー(表示中のみ)・お知らせ欄・「プレビュー」見出し・下の再生バーを除いた残り。
+// 窓の大きさが変わった時にも呼び直す。
 function fitPreviewWrap() {
   const panel = el.previewWrap.parentElement;
   const panelStyle = getComputedStyle(panel);
+  const rowGap = parseFloat(panelStyle.rowGap) || 0;
   const title = panel.querySelector(".preview-title");
   const usedAbove =
     document.querySelector(".topbar").offsetHeight +
+    el.canvasCustomBar.offsetHeight + // 非表示(display:none)の時は0
     el.status.offsetHeight +
-    (title ? title.offsetHeight + (parseFloat(panelStyle.rowGap) || 0) : 0) +
+    (title ? title.offsetHeight + rowGap : 0) +
+    el.transportBar.offsetHeight + rowGap +
     parseFloat(panelStyle.paddingTop) +
     parseFloat(panelStyle.paddingBottom);
   const availH = Math.min(PREVIEW_MAX_HEIGHT_PX, window.innerHeight * (1 - EDITOR_MIN_HEIGHT_RATIO) - usedAbove);
@@ -610,7 +619,7 @@ function applyCustomCanvasInputs() {
 function onCanvasSizeSelectChange() {
   const key = el.canvasSizeSelect.value;
   const isCustom = key === CUSTOM_CANVAS_KEY;
-  el.canvasCustomInputs.classList.toggle("hidden", !isCustom);
+  el.canvasCustomBar.classList.toggle("hidden", !isCustom);
   if (isCustom) {
     // 入力欄の初期値は今のサイズ(プリセットからそのまま微調整できるように)
     el.canvasCustomWidth.value = el.previewCanvas.width;
@@ -1364,25 +1373,25 @@ function attachResize(handleEl, clip, side) {
 
 // ---------- カット / 削除 ----------
 
-el.cutBtn.addEventListener("click", () => {
-  if (!state.selectedClipId) {
-    setStatus("カットするクリップを選択してください", true);
-    return;
-  }
-  const found = findClip(state.selectedClipId);
+// タイムライン上の時刻secが、クリップの端に近すぎず(0.05秒より内側)カットできる位置か
+function canCutClipAt(clip, sec) {
+  const clipStartT = clip.timelineStart;
+  const clipEndT = clip.timelineStart + (clip.trimEnd - clip.trimStart);
+  return sec > clipStartT + 0.05 && sec < clipEndT - 0.05;
+}
+
+// クリップをタイムライン上の時刻secで2つに分ける(右クリックメニューの「ここでカット」から呼ぶ)
+function cutClipAt(clipId, sec) {
+  const found = findClip(clipId);
   if (!found) return;
   const { clip, track } = found;
 
-  const clipStartT = clip.timelineStart;
-  const clipEndT = clip.timelineStart + (clip.trimEnd - clip.trimStart);
-  const playhead = state.playheadSec;
-
-  if (playhead <= clipStartT + 0.05 || playhead >= clipEndT - 0.05) {
-    setStatus("カットしたい位置に再生ヘッドを合わせてから実行してください", true);
+  if (!canCutClipAt(clip, sec)) {
+    setStatus("クリップの端に近すぎるためカットできません", true);
     return;
   }
 
-  const cutLocal = clip.trimStart + (playhead - clipStartT); // 元ファイル内でのカット位置
+  const cutLocal = clip.trimStart + (sec - clip.timelineStart); // 元ファイル内でのカット位置
 
   const clipB = {
     ...clip,
@@ -1397,21 +1406,23 @@ el.cutBtn.addEventListener("click", () => {
 
   setStatus("カットしました。2つのクリップに分割されました。");
   renderAll();
-});
+}
 
-el.deleteBtn.addEventListener("click", () => {
-  if (!state.selectedClipId) {
+// クリップをタイムラインから外す(右クリックメニュー、またはBackspace/Deleteキーから呼ぶ)。
+// 素材ファイル自体はサーバーに残す(カットした片方など、ほかのクリップが使っていることがあるため)。
+function deleteClip(clipId) {
+  const found = clipId ? findClip(clipId) : null;
+  if (!found) {
     setStatus("削除するクリップを選択してください", true);
     return;
   }
-  const found = findClip(state.selectedClipId);
-  if (!found) return;
   const { clip, track } = found;
   track.clips = track.clips.filter((c) => c.clipId !== clip.clipId);
   cleanupEmptyTrack(track); // メディアの行は消え、オーバーレイは空のまま残る
-  state.selectedClipId = null;
+  if (state.selectedClipId === clip.clipId) state.selectedClipId = null;
+  setStatus(`削除しました: ${clipDisplayName(clip)}`);
   renderAll();
-});
+}
 
 // 行を丸ごと削除する。その行のクリップが使っているサーバー上のファイル(音声/画像/動画)のうち、
 // 他の行のクリップから使われていないものだけをサーバーからも削除する。クリップは行をまたいで
@@ -1469,6 +1480,7 @@ el.clearUploadsBtn.addEventListener("click", async () => {
   if (!confirm("サーバーに保存されている音声・画像ファイルを全て削除します。よろしいですか?\n(現在編集中のタイムラインも空になります)")) {
     return;
   }
+  closeSettingsPanel();
   setStatus("素材を全削除中...");
   try {
     const res = await fetch("/api/uploads", { method: "DELETE" });
@@ -1502,7 +1514,7 @@ function seekFromClientX(clientX, referenceEl) {
   let sec = Math.max(0, x / PX_PER_SEC);
 
   // グリッド(1秒刻み)や他クリップの端(カットでできた前後のパートなど)に近ければスナップさせる。
-  // 「カット」は再生ヘッドの位置で行われるため、これによりカット位置もぴったり合わせられる。
+  // (右クリックの「ここでカット」も、同じ方法でクリックした位置をスナップさせている)
   const snapDelta = bestSnapDelta(sec, collectSnapCandidates());
   if (snapDelta !== null) {
     sec = Math.max(0, sec + snapDelta);
@@ -1562,12 +1574,23 @@ function stopPlayback() {
   state.activeSources = [];
   if (state.rafId) cancelAnimationFrame(state.rafId);
   state.rafId = null;
+  updatePlayButton();
 }
 
-el.playBtn.addEventListener("click", async () => {
+// 再生ボタンは再生と停止を兼ねる。今の状態に合わせて表示(▶ / ⏸)と説明を切り替える。
+// stopPlayback/startPlaybackから呼ぶので、スクラブ等どこから止まっても表示がずれない。
+function updatePlayButton() {
+  const label = state.isPlaying ? "停止" : "再生";
+  el.playBtn.textContent = state.isPlaying ? "⏸" : "▶";
+  el.playBtn.title = label;
+  el.playBtn.setAttribute("aria-label", label);
+}
+
+async function startPlayback() {
   stopPlayback();
   const ctx = getAudioContext();
   state.isPlaying = true;
+  updatePlayButton();
   const startPlayhead = state.playheadSec;
 
   // 再生対象のクリップを先に洗い出す。音声クリップと、動画クリップに入っている音声を、
@@ -1592,6 +1615,7 @@ el.playBtn.addEventListener("click", async () => {
   if (!hasRemainingContent) {
     setStatus("再生できるクリップがありません", true);
     state.isPlaying = false;
+    updatePlayButton();
     return;
   }
 
@@ -1630,12 +1654,21 @@ el.playBtn.addEventListener("click", async () => {
     setStatus("再生中...");
   }
   tickPlayhead();
-});
+}
 
 function tickPlayhead() {
   if (!state.isPlaying) return;
   const elapsed = Math.max(0, getAudioContext().currentTime - state.playStartCtxTime);
   const nowSec = state._playStartSec + elapsed;
+  // 最後のクリップの終わりまで来たら、そこで止める
+  const endSec = contentDurationSec();
+  if (nowSec >= endSec) {
+    state.playheadSec = endSec;
+    stopPlayback();
+    setStatus("最後まで再生しました");
+    renderAll();
+    return;
+  }
   const playheadEl = document.getElementById("playheadEl");
   if (playheadEl) {
     playheadEl.style.left = `${LABEL_WIDTH + nowSec * PX_PER_SEC}px`;
@@ -1653,13 +1686,58 @@ function currentPlayheadSec() {
   return state._playStartSec + elapsed;
 }
 
-el.stopBtn.addEventListener("click", () => {
+// 今表示されている位置で再生を止める
+function pausePlayback() {
   if (state.isPlaying) {
     state.playheadSec = currentPlayheadSec();
   }
   stopPlayback();
   setStatus("停止しました");
   renderAll();
+}
+
+// 再生ボタン: 再生中なら停止、止まっていれば再生。最後まで行った状態で押した時は先頭から再生する。
+el.playBtn.addEventListener("click", () => {
+  if (state.isPlaying) {
+    pausePlayback();
+    return;
+  }
+  const endSec = contentDurationSec();
+  if (endSec > 0 && state.playheadSec >= endSec) state.playheadSec = 0;
+  startPlayback();
+});
+
+// 再生ヘッドをsec(0〜最後のクリップの終わり)へ動かす。再生中なら、その位置から再生を続ける。
+function seekTo(sec) {
+  const endSec = contentDurationSec();
+  state.playheadSec = Math.max(0, Math.min(endSec, sec));
+  if (state.isPlaying) {
+    // 最後まで飛んだ時は、もう鳴らすものが無いので止める
+    if (state.playheadSec >= endSec) stopPlayback();
+    else startPlayback();
+  }
+  renderAll();
+  // 移した先の再生ヘッドが見えるように、タイムラインを横にスクロールさせる
+  const editor = el.tracksContainer.closest(".editor");
+  if (editor) {
+    const x = LABEL_WIDTH + state.playheadSec * PX_PER_SEC;
+    if (x < editor.scrollLeft + LABEL_WIDTH || x > editor.scrollLeft + editor.clientWidth) {
+      editor.scrollLeft = Math.max(0, x - LABEL_WIDTH - editor.clientWidth / 3);
+    }
+  }
+}
+
+// 最初へ: 再生中なら止めて、先頭(0秒)へ戻す
+el.rewindBtn.addEventListener("click", () => {
+  stopPlayback();
+  seekTo(0);
+});
+el.backBtn.addEventListener("click", () => seekTo(currentPlayheadSec() - SKIP_SEC));
+el.forwardBtn.addEventListener("click", () => seekTo(currentPlayheadSec() + SKIP_SEC));
+// 最後へ: 再生を止めて、最後のクリップの終わりへ
+el.endBtn.addEventListener("click", () => {
+  stopPlayback();
+  seekTo(contentDurationSec());
 });
 
 // ---------- 書き出し(結合) ----------
@@ -1900,11 +1978,14 @@ function showContextMenuAt(clientX, clientY) {
 }
 
 // 既存のクリップを右クリックした場合のメニュー。
+// どの種類のクリップでも「ここでカット」「削除」を出し、加えて
 // 画像クリップ: 動画生成/画像編集、テキストクリップ: テキスト編集、を表示する。
-function openClipContextMenuForClip(clip, clientX, clientY) {
+// cutSec: 右クリックした位置のタイムライン上の時刻。端に近くて切れない位置ならカットを無効にする。
+function openClipContextMenuForClip(clip, clientX, clientY, cutSec) {
   closeAiPanel();
   closeTextPanel();
   el.clipContextMenu.dataset.targetClipId = clip.clipId;
+  el.clipContextMenu.dataset.cutSec = String(cutSec);
   const isImage = clip.kind === "image";
   const isText = clip.kind === "text";
   el.ctxGenVideoBtn.classList.toggle("hidden", !isImage);
@@ -1912,6 +1993,10 @@ function openClipContextMenuForClip(clip, clientX, clientY) {
   el.ctxGenNewImageBtn.classList.add("hidden");
   el.ctxAddTextBtn.classList.add("hidden");
   el.ctxEditTextBtn.classList.toggle("hidden", !isText);
+  el.ctxCutBtn.classList.remove("hidden");
+  el.ctxCutBtn.disabled = !canCutClipAt(clip, cutSec);
+  el.ctxCutBtn.title = el.ctxCutBtn.disabled ? "クリップの端に近すぎるためカットできません" : "";
+  el.ctxDeleteBtn.classList.remove("hidden");
   showContextMenuAt(clientX, clientY);
 }
 
@@ -1929,6 +2014,8 @@ function openClipContextMenuForNewImage(trackId, clientX, clientY) {
   el.ctxGenNewImageBtn.classList.remove("hidden");
   el.ctxAddTextBtn.classList.remove("hidden");
   el.ctxEditTextBtn.classList.add("hidden");
+  el.ctxCutBtn.classList.add("hidden");
+  el.ctxDeleteBtn.classList.add("hidden");
   showContextMenuAt(clientX, clientY);
 }
 
@@ -2062,6 +2149,21 @@ el.ctxEditTextBtn.addEventListener("click", (e) => {
   closeClipContextMenu();
   if (!found) return;
   openTextPanel("edit", { clip: found.clip }, rect.left, rect.top);
+});
+
+el.ctxCutBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const clipId = el.clipContextMenu.dataset.targetClipId;
+  const sec = Number(el.clipContextMenu.dataset.cutSec);
+  closeClipContextMenu();
+  cutClipAt(clipId, sec);
+});
+
+el.ctxDeleteBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const clipId = el.clipContextMenu.dataset.targetClipId;
+  closeClipContextMenu();
+  deleteClip(clipId);
 });
 
 el.aiPanelCloseBtn.addEventListener("click", closeAiPanel);
@@ -2407,30 +2509,27 @@ document.addEventListener("click", (e) => {
 });
 
 // 右クリックの一括ハンドリング:
-//   - 画像/テキストクリップ上    -> それぞれ専用のメニュー(動画生成/画像編集/テキスト編集)
+//   - クリップ上                -> カット/削除。画像・テキストはそれぞれ専用の項目(動画生成/画像編集/テキスト編集)も
 //   - トラックラベル上          -> 対象外(通常のブラウザメニューに任せる)
 //   - トラックレーンの空き部分  -> そのトラック・その位置に新規画像生成/テキスト追加メニュー
 //   - タイムライン領域のそれ以外(トラックが1つも無い場合の空欄など)
 //                               -> 新しいトラックの先頭に同上のメニュー
 //   - それ以外(ツールバー等)   -> 通常のブラウザメニューに任せ、開いていたUIは閉じる
 document.addEventListener("contextmenu", (e) => {
-  const clipEl = e.target.closest(".clip.clip-image, .clip.clip-text");
+  const clipEl = e.target.closest(".clip");
   if (clipEl) {
     e.preventDefault();
     const clipId = clipEl.dataset.clipId;
     const found = findClip(clipId);
     if (!found) return;
+    // カット位置 = 右クリックした位置(再生ヘッドの移動と同じく、グリッドや他クリップの端にスナップ)
+    const laneRect = clipEl.parentElement.getBoundingClientRect();
+    let cutSec = Math.max(0, (e.clientX - laneRect.left) / PX_PER_SEC);
+    const snapDelta = bestSnapDelta(cutSec, collectSnapCandidates(clipId));
+    if (snapDelta !== null) cutSec += snapDelta;
     state.selectedClipId = clipId;
     renderAll();
-    openClipContextMenuForClip(found.clip, e.clientX, e.clientY);
-    return;
-  }
-
-  if (e.target.closest(".clip")) {
-    // 音声/動画クリップは対象外。通常のブラウザメニューに任せ、開いていたUIは閉じる
-    closeClipContextMenu();
-    closeAiPanel();
-    closeTextPanel();
+    openClipContextMenuForClip(found.clip, e.clientX, e.clientY, cutSec);
     return;
   }
 
@@ -2547,6 +2646,17 @@ function isTypingTarget(target) {
   const tag = target.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
 }
+
+// 選択中のクリップをBackspace/Deleteキーで削除する。入力欄で文字を消している時は何もしない。
+// preventDefaultで、ブラウザによってはBackspaceで前のページへ戻ってしまうのも防ぐ。
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Backspace" && e.key !== "Delete") return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  if (isTypingTarget(e.target) || !state.selectedClipId) return;
+  e.preventDefault();
+  closeClipContextMenu();
+  deleteClip(state.selectedClipId);
+});
 
 document.addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;

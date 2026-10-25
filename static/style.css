@@ -53,6 +53,7 @@ body {
 }
 
 .topbar,
+.subbar,
 .status,
 .preview-panel {
   flex-shrink: 0;
@@ -150,7 +151,8 @@ body {
 .topbar .btn,
 .topbar .btn-warning,
 .topbar .file-btn,
-.topbar .time-counter {
+.transport-bar .btn,
+.time-counter {
   box-sizing: border-box;
   height: var(--toolbar-control-h);
   display: inline-flex;
@@ -160,17 +162,62 @@ body {
   line-height: 1;
 }
 /* inline-flexにすると「0:00 / 0:00」の空白が詰まるので、間隔はgapで付ける */
-.topbar .time-counter {
+.time-counter {
   gap: 0.3em;
 }
-.topbar .select {
+.topbar .select,
+.subbar .select {
   box-sizing: border-box;
   height: var(--toolbar-control-h);
   padding-top: 0;
   padding-bottom: 0;
 }
 
-/* 画面サイズ「カスタム」の幅・高さ入力欄(.hiddenより前に定義し、非表示が優先されるようにする) */
+/* 画面サイズで「カスタム」を選んだ時だけ、上のバーの下に出す入力用のバー
+   (.hiddenより前に定義し、非表示が優先されるようにする) */
+.subbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 4px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.subbar-label {
+  color: var(--text);
+  font-weight: 600;
+}
+.subbar-note {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* プレビューの下(タイムラインとの間)に置く再生操作のバー。1段目にボタン、2段目に時間を表示する */
+.transport-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.transport-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 文字の無いアイコンだけのボタン */
+.transport-bar .btn {
+  min-width: 36px;
+  justify-content: center;
+  font-size: 14px;
+}
+.transport-bar .time-counter {
+  height: auto;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
 .canvas-custom {
   display: inline-flex;
   align-items: center;
@@ -461,6 +508,11 @@ body {
 .context-menu-item:hover {
   background: var(--panel);
 }
+.context-menu-item:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+  background: transparent;
+}
 
 /* ---------- AI生成パネル(動画生成/画像編集で共用) ---------- */
 .ai-panel {
@@ -597,6 +649,17 @@ body {
 .settings-note {
   margin: 6px 0 0;
   font-size: 12px;
+}
+
+/* 設定パネル下部の「危険な操作」(編集状態のリセット) */
+.settings-danger {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.settings-danger .settings-note {
+  color: var(--text-dim);
+  font-size: 11px;
 }
 .settings-note a {
   color: var(--accent);

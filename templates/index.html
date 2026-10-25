@@ -10,28 +10,16 @@
   <!--ソフト上部-->
   <header class="topbar">
     <h1>🎬 C3動画編集</h1>
-    <div class="time-counter" id="timeCounter">
-      <span id="currentTimeLabel" class="current">0:00</span> / <span id="totalTimeLabel">0:00</span>
-    </div>
     <div class="toolbar">
       <label class="file-btn">
         + ファイルを追加（音声/画像/動画）
         <input type="file" id="fileInput" accept="audio/*,image/*,video/*" multiple hidden>
       </label>
-      <button id="playBtn" class="btn">▶ 再生</button>
-      <button id="stopBtn" class="btn">■ 停止</button>
-      <button id="cutBtn" class="btn" title="選択中のクリップを再生位置でカット">✂ カット</button>
-      <button id="deleteBtn" class="btn" title="選択中のクリップを削除">🗑 削除</button>
-      <span class="spacer"></span>
+    </div>
+    <span class="spacer"></span>
+    <div class="toolbar">
       <!-- 選択肢はscript.jsのCANVAS_PRESETSから作る -->
       <select id="canvasSizeSelect" class="select" title="プレビューと書き出す動画の画面サイズ"></select>
-      <!-- 「カスタム」を選んだ時だけ表示する。範囲(min/max)はscript.jsで設定する -->
-      <span id="canvasCustomInputs" class="canvas-custom hidden">
-        <input id="canvasCustomWidth" type="number" class="select canvas-custom-input" step="2" title="幅(px)">
-        ×
-        <input id="canvasCustomHeight" type="number" class="select canvas-custom-input" step="2" title="高さ(px)">
-        px
-      </span>
       <select id="formatSelect" class="select">
         <option value="mp4">MP4（動画）</option>
         <option value="wav">WAV（音声のみ）</option>
@@ -39,9 +27,20 @@
       </select>
       <button id="exportBtn" class="btn primary">⬇ エクスポート</button>
       <button id="settingsBtn" class="btn" title="Magic Hour APIキーなどの設定はこちらから">⚙ 設定</button>
-      <button id="clearUploadsBtn" class="btn-warning" title="サーバーに保存されているファイルを全て削除します。注：編集中のデータが消えます">🧹 編集状態をリセット</button>
-      </div>
+    </div>
   </header>
+
+  <!-- 画面サイズで「カスタム」を選んだ時だけ表示する。範囲(min/max)はscript.jsで設定する -->
+  <div id="canvasCustomBar" class="subbar hidden">
+    <span class="subbar-label">画面サイズ（カスタム）</span>
+    <span class="canvas-custom">
+      <input id="canvasCustomWidth" type="number" class="select canvas-custom-input" step="2" title="幅(px)">
+      ×
+      <input id="canvasCustomHeight" type="number" class="select canvas-custom-input" step="2" title="高さ(px)">
+      px
+    </span>
+    <span class="subbar-note">幅・高さを入力して Enter で反映</span>
+  </div>
 
   <div id="status" class="status"></div>
 
@@ -49,6 +48,20 @@
     <h2 class="preview-title">プレビュー</h2>
     <div class="preview-canvas-wrap" id="previewWrap">
       <canvas id="previewCanvas" width="1280" height="720"></canvas>
+    </div>
+    <!-- 再生操作(プレビューとタイムラインの間) -->
+    <div class="transport-bar" id="transportBar">
+      <div class="transport-buttons">
+        <button id="rewindBtn" class="btn" title="最初へ戻る" aria-label="最初へ戻る">⏮</button>
+        <button id="backBtn" class="btn" title="5秒戻る" aria-label="5秒戻る">⏪</button>
+        <!-- 再生と停止を兼ねる。表示(▶/⏸)はscript.jsのupdatePlayButtonで切り替える -->
+        <button id="playBtn" class="btn primary" title="再生" aria-label="再生">▶</button>
+        <button id="forwardBtn" class="btn" title="5秒進む" aria-label="5秒進む">⏩</button>
+        <button id="endBtn" class="btn" title="最後のクリップの終わりへ" aria-label="最後のクリップの終わりへ">⏭</button>
+      </div>
+      <div class="time-counter" id="timeCounter">
+        <span id="currentTimeLabel" class="current">0:00</span> / <span id="totalTimeLabel">0:00</span>
+      </div>
     </div>
   </section>
 
@@ -69,6 +82,8 @@
     <button id="ctxGenNewImageBtn" class="context-menu-item">✨ 新しい画像を生成</button>
     <button id="ctxAddTextBtn" class="context-menu-item">📝 テキストを追加</button>
     <button id="ctxEditTextBtn" class="context-menu-item">✏️ テキストを編集</button>
+    <button id="ctxCutBtn" class="context-menu-item">✂ ここでカット</button>
+    <button id="ctxDeleteBtn" class="context-menu-item">🗑 クリップを削除（Backspace）</button>
   </div>
 
   <!-- 上記メニューから開く、プロンプト入力パネル(動画生成/画像編集で共用) -->
@@ -171,6 +186,11 @@
       <button id="settingsSaveBtn" class="btn primary">保存</button>
     </div>
     <p id="settingsStatus" class="ai-panel-status"></p>
+    <div class="settings-danger">
+      <span class="settings-label">危険な操作</span>
+      <button id="clearUploadsBtn" class="btn-warning" title="サーバーに保存されているファイルを全て削除します。注：編集中のデータが消えます">🧹 編集状態をリセット</button>
+      <p class="settings-note">サーバーに保存された素材をすべて削除し、タイムラインを空にします。</p>
+    </div>
   </div>
 
   <script src="{{ url_for('static', filename='script.js') }}"></script>
