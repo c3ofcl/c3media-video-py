@@ -1380,14 +1380,14 @@ function canCutClipAt(clip, sec) {
   return sec > clipStartT + 0.05 && sec < clipEndT - 0.05;
 }
 
-// クリップをタイムライン上の時刻secで2つに分ける(右クリックメニューの「ここでカット」から呼ぶ)
+// クリップをタイムライン上の時刻secで2つに分ける(右クリックメニューの「カット」から、再生ヘッドの位置で呼ぶ)
 function cutClipAt(clipId, sec) {
   const found = findClip(clipId);
   if (!found) return;
   const { clip, track } = found;
 
   if (!canCutClipAt(clip, sec)) {
-    setStatus("クリップの端に近すぎるためカットできません", true);
+    setStatus("オレンジのバーをクリップの途中に合わせてから実行してください", true);
     return;
   }
 
@@ -1514,7 +1514,7 @@ function seekFromClientX(clientX, referenceEl) {
   let sec = Math.max(0, x / PX_PER_SEC);
 
   // グリッド(1秒刻み)や他クリップの端(カットでできた前後のパートなど)に近ければスナップさせる。
-  // (右クリックの「ここでカット」も、同じ方法でクリックした位置をスナップさせている)
+  // 「カット」は再生ヘッドの位置で行われるため、これによりカット位置もぴったり合わせられる。
   const snapDelta = bestSnapDelta(sec, collectSnapCandidates());
   if (snapDelta !== null) {
     sec = Math.max(0, sec + snapDelta);
@@ -1980,12 +1980,12 @@ function showContextMenuAt(clientX, clientY) {
 // 既存のクリップを右クリックした場合のメニュー。
 // どの種類のクリップでも「ここでカット」「削除」を出し、加えて
 // 画像クリップ: 動画生成/画像編集、テキストクリップ: テキスト編集、を表示する。
-// cutSec: 右クリックした位置のタイムライン上の時刻。端に近くて切れない位置ならカットを無効にする。
-function openClipContextMenuForClip(clip, clientX, clientY, cutSec) {
+// カットは再生ヘッド(オレンジのバー)の位置で行う。バーがクリップに掛かっていない・端に近すぎる時は無効にする。
+function openClipContextMenuForClip(clip, clientX, clientY) {
   closeAiPanel();
   closeTextPanel();
   el.clipContextMenu.dataset.targetClipId = clip.clipId;
-  el.clipContextMenu.dataset.cutSec = String(cutSec);
+  const cutSec = currentPlayheadSec();
   const isImage = clip.kind === "image";
   const isText = clip.kind === "text";
   el.ctxGenVideoBtn.classList.toggle("hidden", !isImage);
@@ -1995,7 +1995,9 @@ function openClipContextMenuForClip(clip, clientX, clientY, cutSec) {
   el.ctxEditTextBtn.classList.toggle("hidden", !isText);
   el.ctxCutBtn.classList.remove("hidden");
   el.ctxCutBtn.disabled = !canCutClipAt(clip, cutSec);
-  el.ctxCutBtn.title = el.ctxCutBtn.disabled ? "クリップの端に近すぎるためカットできません" : "";
+  el.ctxCutBtn.title = el.ctxCutBtn.disabled
+    ? "オレンジのバーをクリップの途中に合わせてから実行してください"
+    : "オレンジのバーの位置でカット";
   el.ctxDeleteBtn.classList.remove("hidden");
   showContextMenuAt(clientX, clientY);
 }
@@ -2154,7 +2156,9 @@ el.ctxEditTextBtn.addEventListener("click", (e) => {
 el.ctxCutBtn.addEventListener("click", (e) => {
   e.stopPropagation();
   const clipId = el.clipContextMenu.dataset.targetClipId;
-  const sec = Number(el.clipContextMenu.dataset.cutSec);
+  // 再生中ならその位置で止めてからカットする
+  if (state.isPlaying) pausePlayback();
+  const sec = state.playheadSec;
   closeClipContextMenu();
   cutClipAt(clipId, sec);
 });
@@ -2522,14 +2526,9 @@ document.addEventListener("contextmenu", (e) => {
     const clipId = clipEl.dataset.clipId;
     const found = findClip(clipId);
     if (!found) return;
-    // カット位置 = 右クリックした位置(再生ヘッドの移動と同じく、グリッドや他クリップの端にスナップ)
-    const laneRect = clipEl.parentElement.getBoundingClientRect();
-    let cutSec = Math.max(0, (e.clientX - laneRect.left) / PX_PER_SEC);
-    const snapDelta = bestSnapDelta(cutSec, collectSnapCandidates(clipId));
-    if (snapDelta !== null) cutSec += snapDelta;
     state.selectedClipId = clipId;
     renderAll();
-    openClipContextMenuForClip(found.clip, e.clientX, e.clientY, cutSec);
+    openClipContextMenuForClip(found.clip, e.clientX, e.clientY);
     return;
   }
 
