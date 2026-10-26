@@ -51,7 +51,8 @@ const CANVAS_PRESETS = {
   "1080x1080": { w: 1080, h: 1080, label: "正方形 1:1 (1080×1080)" },
 };
 const DEFAULT_CANVAS_PRESET = "1920x1080";
-const CUSTOM_CANVAS_KEY = "custom";
+const CUSTOM_CANVAS_KEY = "custom"; // 「カスタム(サイズを指定)…」: 選ぶとサイズ指定のウィンドウを開く
+const CUSTOM_APPLIED_KEY = "custom-applied"; // ウィンドウで適用したサイズ(「カスタム W×H」として選択欄に出す)
 const MIN_CANVAS_SIDE = 240;
 const MAX_CANVAS_SIDE = 1920;
 const PREVIEW_MAX_HEIGHT_PX = 300; // プレビュー枠の表示上の最大の高さ(大きな画面でも大きくなりすぎないように)
@@ -96,7 +97,12 @@ const el = {
   formatSelect: document.getElementById("formatSelect"),
   canvasSizeSelect: document.getElementById("canvasSizeSelect"),
   previewWrap: document.getElementById("previewWrap"),
-  canvasCustomBar: document.getElementById("canvasCustomBar"),
+  canvasSizeBackdrop: document.getElementById("canvasSizeBackdrop"),
+  canvasSizePanel: document.getElementById("canvasSizePanel"),
+  canvasSizeHint: document.getElementById("canvasSizeHint"),
+  canvasSizeCloseBtn: document.getElementById("canvasSizeCloseBtn"),
+  canvasSizeCancelBtn: document.getElementById("canvasSizeCancelBtn"),
+  canvasSizeApplyBtn: document.getElementById("canvasSizeApplyBtn"),
   canvasCustomWidth: document.getElementById("canvasCustomWidth"),
   canvasCustomHeight: document.getElementById("canvasCustomHeight"),
   currentTimeLabel: document.getElementById("currentTimeLabel"),
@@ -557,8 +563,7 @@ function applyCanvasSize(w, h) {
 
 // プレビュー枠の表示サイズを、画面サイズの縦横比を保ったまま、使える範囲いっぱいに合わせる。
 // 使える高さ = 窓の高さのうち、下のタイムライン用(EDITOR_MIN_HEIGHT_RATIO)・上のツールバー・
-// カスタムサイズのバー(表示中のみ)・お知らせ欄・「プレビュー」見出し・下の再生バーを除いた残り。
-// 窓の大きさが変わった時にも呼び直す。
+// お知らせ欄・「プレビュー」見出し・下の再生バーを除いた残り。窓の大きさが変わった時にも呼び直す。
 function fitPreviewWrap() {
   const panel = el.previewWrap.parentElement;
   const panelStyle = getComputedStyle(panel);
@@ -566,7 +571,6 @@ function fitPreviewWrap() {
   const title = panel.querySelector(".preview-title");
   const usedAbove =
     document.querySelector(".topbar").offsetHeight +
-    el.canvasCustomBar.offsetHeight + // 非表示(display:none)の時は0
     el.status.offsetHeight +
     (title ? title.offsetHeight + rowGap : 0) +
     el.transportBar.offsetHeight + rowGap +
@@ -598,15 +602,53 @@ function normalizeCanvasSide(value, fallback) {
   return Math.floor(clamped / 2) * 2;
 }
 
+// ---------- 画面サイズ(カスタム)のウィンドウ ----------
+// 選択欄で「カスタム(サイズを指定)…」を選ぶとウィンドウを開く。「適用」すると選択欄に
+// 「カスタム W×H」の項目を作って選び、キャンセルした時は選択欄を元の項目に戻す。
+// 「カスタム…」の項目は選んだままにしないので、何度でも選び直してウィンドウを開ける。
+
+let canvasSelectPrevValue = DEFAULT_CANVAS_PRESET; // ウィンドウを開く前に選ばれていた項目
+
+function openCanvasSizePanel() {
+  // 入力欄の初期値は今のサイズ(プリセットからそのまま微調整できるように)
+  el.canvasCustomWidth.value = el.previewCanvas.width;
+  el.canvasCustomHeight.value = el.previewCanvas.height;
+  el.canvasSizeHint.textContent = `幅・高さは${MIN_CANVAS_SIDE}〜${MAX_CANVAS_SIDE}pxの偶数で指定できます(奇数は偶数に丸めます)`;
+  el.canvasSizeBackdrop.classList.remove("hidden");
+  el.canvasSizePanel.classList.remove("hidden");
+  el.canvasCustomWidth.focus();
+  el.canvasCustomWidth.select();
+}
+
+function isCanvasSizePanelOpen() {
+  return !el.canvasSizePanel.classList.contains("hidden");
+}
+
+function closeCanvasSizePanel() {
+  el.canvasSizeBackdrop.classList.add("hidden");
+  el.canvasSizePanel.classList.add("hidden");
+  // 適用せずに閉じた時は、選択欄を開く前の項目に戻す
+  el.canvasSizeSelect.value = canvasSelectPrevValue;
+}
+
 function applyCustomCanvasInputs() {
   const rawW = el.canvasCustomWidth.value;
   const rawH = el.canvasCustomHeight.value;
   const w = normalizeCanvasSide(rawW, el.previewCanvas.width);
   const h = normalizeCanvasSide(rawH, el.previewCanvas.height);
-  // 丸めた結果を入力欄に書き戻し、実際に使われるサイズが分かるようにする
-  el.canvasCustomWidth.value = w;
-  el.canvasCustomHeight.value = h;
   applyCanvasSize(w, h);
+
+  let opt = el.canvasSizeSelect.querySelector(`option[value="${CUSTOM_APPLIED_KEY}"]`);
+  if (!opt) {
+    opt = document.createElement("option");
+    opt.value = CUSTOM_APPLIED_KEY;
+    // 「カスタム…」の手前に置く
+    el.canvasSizeSelect.insertBefore(opt, el.canvasSizeSelect.querySelector(`option[value="${CUSTOM_CANVAS_KEY}"]`));
+  }
+  opt.textContent = `カスタム (${w}×${h})`;
+  canvasSelectPrevValue = CUSTOM_APPLIED_KEY;
+  closeCanvasSizePanel();
+
   if (String(w) !== rawW || String(h) !== rawH) {
     setStatus(
       `画面サイズを ${w}×${h} に調整しました(幅・高さは${MIN_CANVAS_SIDE}〜${MAX_CANVAS_SIDE}pxの偶数で指定できます)`
@@ -618,14 +660,15 @@ function applyCustomCanvasInputs() {
 
 function onCanvasSizeSelectChange() {
   const key = el.canvasSizeSelect.value;
-  const isCustom = key === CUSTOM_CANVAS_KEY;
-  el.canvasCustomBar.classList.toggle("hidden", !isCustom);
-  if (isCustom) {
-    // 入力欄の初期値は今のサイズ(プリセットからそのまま微調整できるように)
-    el.canvasCustomWidth.value = el.previewCanvas.width;
-    el.canvasCustomHeight.value = el.previewCanvas.height;
-    applyCustomCanvasInputs();
-    el.canvasCustomWidth.focus();
+  if (key === CUSTOM_CANVAS_KEY) {
+    openCanvasSizePanel();
+    return;
+  }
+  canvasSelectPrevValue = key;
+  if (key === CUSTOM_APPLIED_KEY) {
+    // 一度適用したカスタムサイズに戻す(項目の文字「カスタム (W×H)」から読み取る)
+    const m = el.canvasSizeSelect.selectedOptions[0].textContent.match(/(\d+)×(\d+)/);
+    if (m) applyCanvasSize(Number(m[1]), Number(m[2]));
     return;
   }
   const preset = CANVAS_PRESETS[key] || CANVAS_PRESETS[DEFAULT_CANVAS_PRESET];
@@ -641,7 +684,7 @@ for (const [key, preset] of Object.entries(CANVAS_PRESETS)) {
 {
   const opt = document.createElement("option");
   opt.value = CUSTOM_CANVAS_KEY;
-  opt.textContent = "カスタム(サイズを指定)";
+  opt.textContent = "カスタム(サイズを指定)…";
   el.canvasSizeSelect.appendChild(opt);
 }
 el.canvasSizeSelect.value = DEFAULT_CANVAS_PRESET;
@@ -649,9 +692,18 @@ el.canvasSizeSelect.addEventListener("change", onCanvasSizeSelectChange);
 for (const input of [el.canvasCustomWidth, el.canvasCustomHeight]) {
   input.min = MIN_CANVAS_SIDE;
   input.max = MAX_CANVAS_SIDE;
-  // changeはEnterキーを押した時・フォーカスが外れた時に発生する
-  input.addEventListener("change", applyCustomCanvasInputs);
+  // Enterキーで適用する
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      applyCustomCanvasInputs();
+    }
+  });
 }
+el.canvasSizeApplyBtn.addEventListener("click", applyCustomCanvasInputs);
+el.canvasSizeCancelBtn.addEventListener("click", closeCanvasSizePanel);
+el.canvasSizeCloseBtn.addEventListener("click", closeCanvasSizePanel);
+el.canvasSizeBackdrop.addEventListener("click", closeCanvasSizePanel);
 
 // ---------- プレビュー画面でのドラッグ配置・拡大縮小 ----------
 // 一般的な動画編集ソフトと同様、テキスト・画像・動画クリップをプレビュー画面上で直接
@@ -2565,6 +2617,7 @@ document.addEventListener("keydown", (e) => {
     closeAiPanel();
     closeSettingsPanel();
     closeTextPanel();
+    if (isCanvasSizePanelOpen()) closeCanvasSizePanel();
   }
 });
 

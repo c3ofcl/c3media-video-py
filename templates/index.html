@@ -30,18 +30,6 @@
     </div>
   </header>
 
-  <!-- 画面サイズで「カスタム」を選んだ時だけ表示する。範囲(min/max)はscript.jsで設定する -->
-  <div id="canvasCustomBar" class="subbar hidden">
-    <span class="subbar-label">画面サイズ（カスタム）</span>
-    <span class="canvas-custom">
-      <input id="canvasCustomWidth" type="number" class="select canvas-custom-input" step="2" title="幅(px)">
-      ×
-      <input id="canvasCustomHeight" type="number" class="select canvas-custom-input" step="2" title="高さ(px)">
-      px
-    </span>
-    <span class="subbar-note">幅・高さを入力して Enter で反映</span>
-  </div>
-
   <div id="status" class="status"></div>
 
   <section class="preview-panel">
@@ -165,6 +153,32 @@
       <button id="textPanelSubmitBtn" class="btn primary">追加する</button>
     </div>
     <p id="textPanelStatus" class="ai-panel-status"></p>
+  </div>
+
+  <!-- 画面サイズで「カスタム」を選んだ時に開くウィンドウ。範囲(min/max)はscript.jsで設定する -->
+  <div id="canvasSizeBackdrop" class="modal-backdrop hidden"></div>
+  <div id="canvasSizePanel" class="ai-panel settings-panel hidden">
+    <div class="ai-panel-header">
+      <span>📐 画面サイズを指定</span>
+      <button id="canvasSizeCloseBtn" class="ai-panel-close" title="閉じる">×</button>
+    </div>
+    <div class="canvas-custom">
+      <label class="canvas-custom-field">
+        <span class="settings-label">幅</span>
+        <input id="canvasCustomWidth" type="number" class="select canvas-custom-input" step="2">
+      </label>
+      <span class="canvas-custom-times">×</span>
+      <label class="canvas-custom-field">
+        <span class="settings-label">高さ</span>
+        <input id="canvasCustomHeight" type="number" class="select canvas-custom-input" step="2">
+      </label>
+      <span class="canvas-custom-unit">px</span>
+    </div>
+    <p id="canvasSizeHint" class="ai-panel-hint"></p>
+    <div class="ai-panel-footer settings-footer">
+      <button id="canvasSizeCancelBtn" class="btn">キャンセル</button>
+      <button id="canvasSizeApplyBtn" class="btn primary">適用</button>
+    </div>
   </div>
 
   <!-- 設定パネル(Magic Hour APIキー) -->
