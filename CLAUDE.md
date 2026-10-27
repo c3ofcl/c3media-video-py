@@ -54,6 +54,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **クリップのモデル**（フロントエンドの `state.tracks[].clips[]`）: `trimStart`/`trimEnd` は元ファイル内での位置（秒）、`timelineStart` はタイムライン上の開始位置、`srcDuration` は右トリムハンドルで伸ばせる上限。種類は `audio | image | video | text`。テキストクリップは `fileId`/`ext` を持たず、代わりに `text`、`fontKey`、`fontSize`（短辺 720px の画面での大きさ。実際の画面サイズに合わせて `min(w,h)/720` 倍して描く）、`position {x,y}`（中心点の相対座標 0〜1）、見た目の `textColor`・`boldLevel`（0〜3）・`outlineEnabled`・`outlineWidth`（文字サイズに対する%）・`outlineColor` を持つ（無い項目は既定=白文字・黒枠線）。画像・動画クリップも `position` と `scale`（1 = 画面いっぱいに収まるレターボックスの大きさ）を持ち、プレビュー上でドラッグ移動・四隅で拡大縮小できる。位置・大きさは画面に対する相対値なので、画面サイズを変えても配置の比率は保たれる。書き出しリクエストの形式は `app.py` の `export()` の docstring に記載されている。
 
+**元に戻す／やり直す**（Ctrl+Z / Ctrl+Y）: `state.tracks` の JSON スナップショットを履歴として持つ。`renderAll()` の最後で `checkpoint()` が前回の状態と比べ、変わっていれば1段階として積む（選択だけの変化は積まない）。そのため新しい編集操作も、最後に `renderAll()` を呼べば自動で元に戻せる。ドラッグ中は何度も `renderAll()` が呼ばれるので `beginInteraction()`/`endInteraction()` で記録を止め、離したときに1回だけ積む。素材ファイルは履歴に含まないので、サーバーから素材を消す操作（行の🗑で素材削除・編集状態のリセット）の後は `resetHistory()` で履歴を消す。
+
 **トラック**: 2 種類ある。`media`（アップロードや AI 生成で作られ、空になると自動で消える）と `overlay`（ユーザーが作成し、空になっても残る）。どの種類のクリップもどのトラックにも置け、トラックをまたいだドラッグ移動もできる。`state.tracks` の並び順 = 画面上の並び順 = 重なり順（後ろのトラックほど手前に描画される）。media トラックは最初の overlay の手前に挿入される。
 
 **書き出し**（`app.py`）:

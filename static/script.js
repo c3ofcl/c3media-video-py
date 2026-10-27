@@ -747,6 +747,7 @@ function findResizeHandleAtPoint(x, y) {
 
 function startPreviewMove(clip, x, y) {
   state.selectedClipId = clip.clipId;
+  beginInteraction();
   const defaultPos = clip.kind === "text" ? DEFAULT_TEXT_POSITION : DEFAULT_MEDIA_POSITION;
   const pos = clip.position || defaultPos;
   const canvas = el.previewCanvas;
@@ -771,6 +772,7 @@ function startPreviewMove(clip, x, y) {
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
     el.previewCanvas.style.cursor = "default";
+    endInteraction();
   }
   document.addEventListener("mousemove", onMove);
   document.addEventListener("mouseup", onUp);
@@ -784,6 +786,7 @@ function startPreviewResize(clip, corner) {
   const handles = state.previewHandles;
   const box = state.previewBoxes[clip.clipId];
   if (!handles || handles.clipId !== clip.clipId || !box) return;
+  beginInteraction();
 
   const oppositeOf = {
     "top-left": "bottom-right",
@@ -840,6 +843,7 @@ function startPreviewResize(clip, corner) {
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
     el.previewCanvas.style.cursor = "default";
+    endInteraction();
   }
   document.addEventListener("mousemove", onMove);
   document.addEventListener("mouseup", onUp);
@@ -1136,6 +1140,93 @@ function buildAddOverlayRow(total) {
   return row;
 }
 
+// ---------- 元に戻す / やり直す(Ctrl+Z / Ctrl+Y) ----------
+// 編集の状態はすべて state.tracks(行とクリップの数値)にあるので、そのスナップショットを履歴として持つ。
+// renderAll() の最後で checkpoint() を呼び、前回から state.tracks が変わっていれば1段階として積む。
+// そのため、新しい操作も最後に renderAll() を呼べば、個別の対応なしで元に戻せるようになる。
+// ドラッグ中は何度も renderAll() が呼ばれるので、beginInteraction() で記録を止め、
+// endInteraction()(指を離したとき)で1回だけ記録する。
+// 素材ファイル自体は履歴に含めない(クリップはfileIdで指しているだけ)。そのため、サーバーから
+// 素材ファイルを消す操作(行の🗑で素材削除・編集状態のリセット)の後は resetHistory() で履歴を消す。
+
+const HISTORY_LIMIT = 100;
+let undoStack = []; // 元に戻す履歴(古い順)
+let redoStack = []; // やり直す履歴
+let lastSnapshot = null; // 最後に記録した状態(比較用)
+let historyPaused = false; // ドラッグ中はtrue
+
+function snapshotState() {
+  return { tracks: JSON.stringify(state.tracks), selectedClipId: state.selectedClipId };
+}
+
+function checkpoint() {
+  if (historyPaused) return;
+  const snap = snapshotState();
+  if (lastSnapshot && snap.tracks === lastSnapshot.tracks) {
+    // 選択だけが変わった場合は履歴を増やさず、戻したときに選ばれる状態だけ最新にしておく
+    lastSnapshot.selectedClipId = snap.selectedClipId;
+    return;
+  }
+  if (lastSnapshot) {
+    undoStack.push(lastSnapshot);
+    if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+    redoStack = [];
+  }
+  lastSnapshot = snap;
+}
+
+// 今の状態を起点に、履歴を空にする
+function resetHistory() {
+  undoStack = [];
+  redoStack = [];
+  lastSnapshot = snapshotState();
+}
+
+function beginInteraction() {
+  historyPaused = true;
+}
+
+function endInteraction() {
+  historyPaused = false;
+  checkpoint();
+}
+
+function restoreSnapshot(snap) {
+  if (state.isPlaying) stopPlayback();
+  state.tracks = JSON.parse(snap.tracks);
+  state.selectedClipId = findClip(snap.selectedClipId) ? snap.selectedClipId : null;
+  // 比較用の状態を先に復元後にしておくので、下の renderAll() で復元自体が履歴に積まれることはない
+  lastSnapshot = snapshotState();
+  for (const track of state.tracks) {
+    for (const clip of track.clips) if (clip.kind !== "text") preloadClipMedia(clip);
+  }
+  renderAll();
+}
+
+function undo() {
+  if (historyPaused) return;
+  checkpoint(); // まだ記録されていない変更があれば先に記録する
+  if (undoStack.length === 0) {
+    setStatus("これ以上戻せません", true);
+    return;
+  }
+  redoStack.push(snapshotState());
+  restoreSnapshot(undoStack.pop());
+  setStatus("元に戻しました(Ctrl+Yでやり直し)");
+}
+
+function redo() {
+  if (historyPaused) return;
+  checkpoint();
+  if (redoStack.length === 0) {
+    setStatus("やり直せる操作がありません", true);
+    return;
+  }
+  undoStack.push(snapshotState());
+  restoreSnapshot(redoStack.pop());
+  setStatus("やり直しました");
+}
+
 function renderAll() {
   renderRuler();
   updateTimeDisplay();
@@ -1162,6 +1253,7 @@ function renderAll() {
   el.tracksContainer.appendChild(playhead);
 
   updatePreview(state.playheadSec);
+  checkpoint();
 }
 
 const CLIP_KIND_ICON = { image: "🖼 ", video: "🎬 ", text: "📝 " };
@@ -1296,6 +1388,7 @@ function attachDrag(clipEl, clip) {
     const startX = e.clientX;
     const startY = e.clientY;
     const startTimelineStart = clip.timelineStart;
+    beginInteraction();
     const dur = clip.trimEnd - clip.trimStart;
     const snapCandidates = collectSnapCandidates(clip.clipId);
 
@@ -1355,6 +1448,7 @@ function attachDrag(clipEl, clip) {
         moveClipToTrack(clip, targetTrackId);
       }
       renderAll();
+      endInteraction();
     }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -1370,6 +1464,7 @@ function attachResize(handleEl, clip, side) {
     state.selectedClipId = clip.clipId;
     const startX = e.clientX;
     const startTrimStart = clip.trimStart;
+    beginInteraction();
     const startTrimEnd = clip.trimEnd;
     const startTimelineStart = clip.timelineStart;
     const snapCandidates = collectSnapCandidates(clip.clipId);
@@ -1417,6 +1512,7 @@ function attachResize(handleEl, clip, side) {
     function onUp() {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      endInteraction();
     }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -1494,7 +1590,7 @@ async function deleteTrackFile(track) {
 
   if (fileIds.length > 0) {
     const what = fileIds.length === 1 ? `「${label}」` : `この行の${fileIds.length}個のファイル`;
-    if (!confirm(`${what}をサーバーから完全に削除します。よろしいですか?`)) {
+    if (!confirm(`${what}をサーバーから完全に削除します。よろしいですか?\n(この操作は元に戻せません)`)) {
       return;
     }
     setStatus(`削除中: ${label} ...`);
@@ -1525,11 +1621,14 @@ async function deleteTrackFile(track) {
 
   setStatus(`削除しました: ${label}`);
   renderAll();
+  // 素材ファイルをサーバーから消した場合、それを指す過去の状態には戻せないので履歴を消す
+  // (ファイルを消さない行の削除=空のオーバーレイ行などは、普通に元に戻せる)
+  if (fileIds.length > 0) resetHistory();
 }
 
 // サーバーに保存されているファイル(音声/画像)を(前回セッション分も含めて)まとめて削除する
 el.clearUploadsBtn.addEventListener("click", async () => {
-  if (!confirm("サーバーに保存されている音声・画像ファイルを全て削除します。よろしいですか?\n(現在編集中のタイムラインも空になります)")) {
+  if (!confirm("サーバーに保存されている音声・画像ファイルを全て削除します。よろしいですか?\n(現在編集中のタイムラインも空になります。この操作は元に戻せません)")) {
     return;
   }
   closeSettingsPanel();
@@ -1553,6 +1652,7 @@ el.clearUploadsBtn.addEventListener("click", async () => {
     state.videoCache = {};
     setStatus(`削除しました(${data.deleted ?? 0}件)`);
     renderAll();
+    resetHistory(); // 素材ファイルを消したので、これより前の状態には戻せない
   } catch (err) {
     setStatus(`通信エラー: ${err}`, true);
   }
@@ -2711,9 +2811,20 @@ document.addEventListener("keydown", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
   if (isTypingTarget(e.target)) return;
   const key = e.key.toLowerCase();
+  if (key === "z" && !e.shiftKey) {
+    e.preventDefault();
+    undo();
+    return;
+  }
+  if (key === "y" || (key === "z" && e.shiftKey)) {
+    e.preventDefault();
+    redo();
+    return;
+  }
+  if (e.shiftKey) return;
   if (key === "c") {
     e.preventDefault();
     copySelectedClip();
@@ -2800,6 +2911,7 @@ el.settingsClearBtn.addEventListener("click", () => {
 state.tracks.push(newOverlayTrack());
 onCanvasSizeSelectChange();
 renderAll();
+resetHistory(); // 起動直後の状態を、元に戻せる起点にする
 
 // ブラウザのリロード保護プログラム
 window.addEventListener('beforeunload',(event) => {
