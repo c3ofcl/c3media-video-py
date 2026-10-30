@@ -2232,7 +2232,7 @@ function openAiPanel(mode, ctx, anchorX, anchorY) {
   } else if (mode === "image") {
     aiPanelTargetClipId = ctx.clip.clipId;
     el.aiPanelTitle.textContent = "✨ この画像を基に新規生成";
-    el.aiPanelHint.textContent = "この画像を元にAIで編集し、新しいトラックとして追加します。";
+    el.aiPanelHint.textContent = "この画像を元にAIで編集し、生成した画像でこのクリップを置き換えます。";
     el.aiPanelPrompt.placeholder = "編集内容を入力(例: 背景を夕焼けの空に変更して)";
     populateAspectRatioSelect("image");
     el.aiPanelAspectRow.classList.remove("hidden");
@@ -2391,8 +2391,8 @@ el.aiPanelSubmitBtn.addEventListener("click", async () => {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "画像の生成に失敗しました");
-      addTrackFromAssetResponse(data);
-      setStatus("AIで編集した画像を新しいトラックとして追加しました");
+      replaceClipWithAsset(clip, data);
+      setStatus("AIで編集した画像を生成し、タイムラインのクリップと置き換えました");
     } else {
       const res = await fetch("/api/ai/generate-new-image", {
         method: "POST",
@@ -2419,7 +2419,7 @@ el.aiPanelSubmitBtn.addEventListener("click", async () => {
   }
 });
 
-// 生成された動画で、元の画像クリップを置き換える(同じトラック・同じタイムライン開始位置)
+// 生成された動画・画像で、元の画像クリップを置き換える(同じトラック・同じタイムライン開始位置)
 function replaceClipWithAsset(oldClip, data) {
   const track = state.tracks.find((t) => t.clips.some((c) => c.clipId === oldClip.clipId));
   if (!track) return;
@@ -2435,10 +2435,11 @@ function replaceClipWithAsset(oldClip, data) {
     url: data.url,
     srcDuration: data.maxDuration ?? data.duration,
     trimStart: 0,
-    trimEnd: data.duration,
+    // 画像は既定の長さで返ってくるので、元のクリップの表示時間を保つ
+    trimEnd: data.kind === "image" ? oldClip.trimEnd - oldClip.trimStart : data.duration,
     timelineStart: oldClip.timelineStart,
     trackId: oldClip.trackId,
-    // プレビュー上で調整した位置・大きさは、置き換え後の動画にも引き継ぐ
+    // プレビュー上で調整した位置・大きさは、置き換え後のクリップにも引き継ぐ
     position: oldClip.position,
     scale: oldClip.scale,
   };

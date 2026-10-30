@@ -962,4 +962,5 @@ def export():
 if __name__ == "__main__":
     # threaded=True: AI生成リクエストはMagic Hour側の処理完了まで数十秒〜数分ブロックするため、
     # その間も他のリクエスト(ページ表示や他の操作)を受け付けられるようにする。
-    app.run(debug=True, port=5000, threaded=True)
+    # ポートは環境変数PORTで変えられる(macOSはAirPlayレシーバーが5000を使うため、起動.commandは5001を指定する)
+    app.run(debug=True, port=int(os.environ.get("PORT", 5000)), threaded=True)

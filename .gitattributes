@@ -1,0 +1,3 @@
+# 起動ファイルの改行コードを固定する(Macの.commandはCRLFだと動かず、Windowsの.batはLFだと誤動作することがあるため)
+*.command text eol=lf
+*.bat text eol=crlf
